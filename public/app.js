@@ -218,6 +218,8 @@ async function loadFolderBrowser(dir) {
       item.innerHTML = `<span class="folder-label">${escapeHtml(name)}</span>`;
       const fullPath = `${dir}/${name}`;
       item.addEventListener('click', () => {
+        folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
+        item.classList.add('active');
         scanDirectory(fullPath);
       });
       item.addEventListener('dblclick', () => {

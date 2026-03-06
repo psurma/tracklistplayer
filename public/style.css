@@ -220,6 +220,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   text-overflow: ellipsis; border-left: 2px solid transparent;
 }
 .folder-item:hover { background: var(--highlight); color: var(--text); }
+.folder-item.active { background: var(--bg3); color: var(--text); border-left-color: var(--accent); }
 .folder-item.filter-hidden { display: none; }
 .folder-item mark { background: #f5c518; color: #000; border-radius: 2px; padding: 0 1px; }
 
