@@ -402,6 +402,24 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 
 mark.nfo-hl { background: var(--accent); color: #000; border-radius: 2px; padding: 0 1px; }
 
+/* Electron: drag window from blank areas in main panel */
+#main { -webkit-app-region: drag; }
+#main button,
+#main a,
+#main input,
+#nfo-pane { -webkit-app-region: no-drag; }
+
+/* ── SoundCloud button ──────────────────────────────── */
+#soundcloud-btn {
+  display: inline-block; background: #ff5500; color: #fff;
+  border-radius: 20px; padding: 6px 18px;
+  font-family: inherit; font-size: 12px; font-weight: 700;
+  text-decoration: none; letter-spacing: 0.05em; border: none; cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+#soundcloud-btn:hover { background: #e64d00; transform: scale(1.03); }
+#soundcloud-btn.hidden { display: none; }
+
 /* Utility */
 .hidden { display: none !important; }
 .status-msg { padding: 20px 14px; font-size: 12px; color: var(--text-muted); text-align: center; }

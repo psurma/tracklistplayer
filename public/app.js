@@ -34,8 +34,9 @@ const npDisc        = document.getElementById('np-disc');
 const npTrackNumber = document.getElementById('np-track-number');
 const npTitle       = document.getElementById('np-title');
 const npPerformer   = document.getElementById('np-performer');
-const spotifyBtn    = document.getElementById('spotify-btn');
-const finderBtn     = document.getElementById('finder-btn');
+const spotifyBtn      = document.getElementById('spotify-btn');
+const soundcloudBtn   = document.getElementById('soundcloud-btn');
+const finderBtn       = document.getElementById('finder-btn');
 const nfoBtn        = document.getElementById('nfo-btn');
 const themeToggle   = document.getElementById('theme-toggle');
 
@@ -277,6 +278,7 @@ function updateNowPlaying(trackIdx) {
     npTitle.textContent = disc.albumTitle || '—';
     npPerformer.textContent = disc.albumPerformer || '';
     spotifyBtn.classList.add('hidden');
+    soundcloudBtn.classList.add('hidden');
     finderBtn.classList.toggle('hidden', !disc.mp3Path);
     if (disc.mp3Path) finderBtn.dataset.path = disc.mp3Path;
     return;
@@ -292,8 +294,11 @@ function updateNowPlaying(trackIdx) {
   if (query) {
     spotifyBtn.href = `https://open.spotify.com/search/${encodeURIComponent(query)}`;
     spotifyBtn.classList.remove('hidden');
+    soundcloudBtn.href = `https://soundcloud.com/search?q=${encodeURIComponent(query)}`;
+    soundcloudBtn.classList.remove('hidden');
   } else {
     spotifyBtn.classList.add('hidden');
+    soundcloudBtn.classList.add('hidden');
   }
 
   if (disc.mp3Path) {

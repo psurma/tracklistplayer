@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.1] - 2026-03-06
+
+### Added
+- SoundCloud search button alongside Spotify (opens `soundcloud.com/search`)
+- Electron window draggable from any blank area in the main panel
+
 ## [1.1.0] - 2026-03-06
 
 ### Added
