@@ -125,7 +125,21 @@ input[type="range"] {
   outline: none;
   cursor: pointer;
 }
-#seek-bar { flex: 1; }
+#seek-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+#seek-bar { width: 100%; }
+#seek-ticks {
+  position: absolute; left: 0; right: 0;
+  top: 50%; transform: translateY(-50%);
+  height: 14px; pointer-events: none;
+}
+.seek-tick {
+  position: absolute; top: 0;
+  width: 2px; height: 14px;
+  background: rgba(255,255,255,0.35);
+  transform: translateX(-50%);
+  border-radius: 1px;
+}
+.seek-tick:hover { background: rgba(255,255,255,0.8); }
 #volume-bar { width: 80px; }
 
 input[type="range"]::-webkit-slider-thumb {

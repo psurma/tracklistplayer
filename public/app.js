@@ -369,6 +369,24 @@ function highlightTrackInSidebar(discId, trackIdx) {
   }
 }
 
+// ── Seek bar track markers ─────────────────────────────────────────────────────
+const seekTicks = document.getElementById('seek-ticks');
+
+function updateSeekTicks() {
+  seekTicks.innerHTML = '';
+  const disc = currentDisc();
+  if (!disc || !disc.tracks.length || !isFinite(audio.duration)) return;
+  for (const track of disc.tracks) {
+    if (track.startSeconds <= 0) continue; // skip track 1 at 0:00
+    const pct = (track.startSeconds / audio.duration) * 100;
+    const tick = document.createElement('div');
+    tick.className = 'seek-tick';
+    tick.style.left = `${pct}%`;
+    tick.title = `${String(track.track).padStart(2, '0')} — ${track.title || ''}`;
+    seekTicks.appendChild(tick);
+  }
+}
+
 // ── Audio / disc loading ──────────────────────────────────────────────────────
 function loadDisc(disc) {
   if (!disc.mp3Path) return;
@@ -379,6 +397,7 @@ function loadDisc(disc) {
   updateNowPlaying(-1);
   highlightTrackInSidebar(disc.id, -1);
   loadWaveform(disc);
+  updateSeekTicks();
 }
 
 function playDiscAtTrack(disc, trackIdx) {
@@ -572,7 +591,10 @@ audio.addEventListener('timeupdate', () => {
 });
 
 audio.addEventListener('loadedmetadata', () => {
-  if (isFinite(audio.duration)) timeTotal.textContent = formatTime(audio.duration);
+  if (isFinite(audio.duration)) {
+    timeTotal.textContent = formatTime(audio.duration);
+    updateSeekTicks();
+  }
 });
 
 audio.addEventListener('play',  () => { btnPlay.innerHTML = '&#9646;&#9646;'; });

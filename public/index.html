@@ -96,7 +96,10 @@
 
     <div id="seek-row">
       <span id="time-current">0:00</span>
-      <input type="range" id="seek-bar" min="0" max="100" step="0.1" value="0" />
+      <div id="seek-wrap">
+        <input type="range" id="seek-bar" min="0" max="100" step="0.1" value="0" />
+        <div id="seek-ticks"></div>
+      </div>
       <span id="time-total">0:00</span>
     </div>
 
