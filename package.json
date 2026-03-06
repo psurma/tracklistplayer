@@ -1,0 +1,16 @@
+{
+  "name": "tracklistplayer",
+  "version": "1.0.0",
+  "description": "DJ mix MP3 player with CUE sheet track detection and Spotify search",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

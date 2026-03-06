@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tracklist Player</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <div id="dir-bar">
+          <input type="text" id="dir-input" placeholder="Music root directory..." autocomplete="off" spellcheck="false" />
+          <button id="dir-load-btn">Load</button>
+        </div>
+        <div id="filter-bar">
+          <input type="text" id="filter-input" placeholder="Filter folders..." autocomplete="off" spellcheck="false" />
+          <button id="filter-clear" title="Clear filter" class="hidden">&#x2715;</button>
+        </div>
+      </div>
+
+      <div id="folder-browser">
+        <div class="status-msg">Enter a directory and click Load.</div>
+      </div>
+
+      <div id="panel-resize"></div>
+
+      <div id="disc-list"></div>
+    </aside>
+
+    <!-- Sidebar resize handle -->
+    <div id="resize-handle"></div>
+
+    <!-- Collapse toggle -->
+    <button id="collapse-btn" title="Toggle sidebar">&#x25C4;</button>
+
+    <!-- Main area -->
+    <main id="main">
+      <div id="toolbar">
+        <button id="theme-toggle" title="Switch theme">Light</button>
+      </div>
+
+      <!-- Now playing -->
+      <div id="now-playing">
+        <div id="np-label">NOW PLAYING</div>
+        <div id="np-disc">—</div>
+        <div id="np-track-number"></div>
+        <div id="np-title">Load a directory to begin</div>
+        <div id="np-performer"></div>
+        <div id="np-actions">
+          <a id="spotify-btn" href="#" target="_blank" rel="noopener noreferrer" class="hidden">Search Spotify</a>
+          <button id="finder-btn" class="hidden">Show in Finder</button>
+          <button id="nfo-btn" class="hidden">NFO</button>
+        </div>
+      </div>
+
+      <!-- NFO content -->
+      <div id="nfo-pane" class="hidden">
+        <div id="nfo-pane-header">
+          <span id="nfo-pane-name"></span>
+          <button id="nfo-pane-close" title="Close NFO">&#x2715;</button>
+        </div>
+        <pre id="nfo-content"></pre>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Full-width player controls footer -->
+  <footer id="player">
+    <audio id="audio"></audio>
+
+    <div id="controls">
+      <button id="btn-prev" title="Previous track">&#9664;&#9664;</button>
+      <button id="btn-play" title="Play / Pause">&#9654;</button>
+      <button id="btn-next" title="Next track">&#9654;&#9654;</button>
+    </div>
+
+    <div id="seek-row">
+      <span id="time-current">0:00</span>
+      <input type="range" id="seek-bar" min="0" max="100" step="0.1" value="0" />
+      <span id="time-total">0:00</span>
+    </div>
+
+    <div id="volume-row">
+      <label for="volume-bar">Vol</label>
+      <input type="range" id="volume-bar" min="0" max="1" step="0.01" value="1" />
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
