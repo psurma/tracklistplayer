@@ -51,6 +51,8 @@ const STORAGE = {
   setBrowserH: (v)   => localStorage.setItem('tlp_browser_h', String(v)),
   getFavs:     ()    => JSON.parse(localStorage.getItem('tlp_favorites') || '[]'),
   setFavs:     (arr) => localStorage.setItem('tlp_favorites', JSON.stringify(arr)),
+  getPlayState: ()   => JSON.parse(localStorage.getItem('tlp_playstate') || 'null'),
+  setPlayState: (v)  => localStorage.setItem('tlp_playstate', JSON.stringify(v)),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -191,6 +193,31 @@ const nfoPaneName  = document.getElementById('nfo-pane-name');
 const nfoPaneClose = document.getElementById('nfo-pane-close');
 
 let lastNfoDir = '';
+let lastNfoText = '';
+
+function highlightNfo() {
+  if (!lastNfoText) return;
+  const disc = currentDisc();
+  const title = disc && state.currentTrackIndex >= 0
+    ? (disc.tracks[state.currentTrackIndex] || {}).title
+    : null;
+
+  if (!title) {
+    nfoContent.textContent = lastNfoText;
+    return;
+  }
+
+  const escaped = escapeHtml(lastNfoText);
+  const escapedTitle = escapeHtml(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const highlighted = escaped.replace(
+    new RegExp(escapedTitle, 'gi'),
+    (m) => `<mark class="nfo-hl">${m}</mark>`
+  );
+  nfoContent.innerHTML = highlighted;
+
+  const first = nfoContent.querySelector('.nfo-hl');
+  if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
 
 async function showNfo(dir) {
   try {
@@ -202,8 +229,9 @@ async function showNfo(dir) {
     }
     const text = await res.text();
     lastNfoDir = dir;
+    lastNfoText = text;
     nfoPaneName.textContent = dir.split('/').pop();
-    nfoContent.textContent = text;
+    highlightNfo();
     nfoPane.classList.remove('hidden');
     nfoBtn.classList.add('hidden'); // hide toggle while pane is open
   } catch (_) {
@@ -418,8 +446,26 @@ async function scanDirectory(dir) {
     const data = await res.json();
     state.discs = data.discs;
     renderDiscList();
-    const first = state.discs.find((d) => d.mp3Path);
-    if (first && !currentDisc()) loadDisc(first);
+
+    // Restore saved playback position if it matches a disc in this scan
+    const saved = STORAGE.getPlayState();
+    const savedDisc = saved && state.discs.find((d) => d.mp3Path === saved.mp3Path);
+    if (savedDisc) {
+      state.currentDiscId = savedDisc.id;
+      state.currentTrackIndex = saved.trackIdx;
+      audio.src = fileUrl(savedDisc.mp3Path);
+      audio.load();
+      updateNowPlaying(saved.trackIdx);
+      highlightTrackInSidebar(savedDisc.id, saved.trackIdx);
+      audio.addEventListener('loadedmetadata', function restorePos() {
+        audio.currentTime = saved.position || 0;
+        audio.removeEventListener('loadedmetadata', restorePos);
+      });
+    } else {
+      const first = state.discs.find((d) => d.mp3Path);
+      if (first && !currentDisc()) loadDisc(first);
+    }
+
     // Show NFO if present in this folder
     showNfo(dir);
   } catch (err) {
@@ -428,6 +474,8 @@ async function scanDirectory(dir) {
 }
 
 // ── Audio events ──────────────────────────────────────────────────────────────
+let savePlayStateTimer = null;
+
 audio.addEventListener('timeupdate', () => {
   if (state.seeking) return;
   const ct = audio.currentTime;
@@ -439,6 +487,17 @@ audio.addEventListener('timeupdate', () => {
     state.currentTrackIndex = newIdx;
     updateNowPlaying(newIdx);
     highlightTrackInSidebar(state.currentDiscId, newIdx);
+    if (!nfoPane.classList.contains('hidden')) highlightNfo();
+  }
+  // Save play state every ~10 s
+  if (!savePlayStateTimer) {
+    savePlayStateTimer = setTimeout(() => {
+      savePlayStateTimer = null;
+      const disc = currentDisc();
+      if (disc && disc.mp3Path) {
+        STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
+      }
+    }, 10000);
   }
 });
 
@@ -447,8 +506,21 @@ audio.addEventListener('loadedmetadata', () => {
 });
 
 audio.addEventListener('play',  () => { btnPlay.innerHTML = '&#9646;&#9646;'; });
-audio.addEventListener('pause', () => { btnPlay.innerHTML = '&#9654;'; });
+audio.addEventListener('pause', () => {
+  btnPlay.innerHTML = '&#9654;';
+  const disc = currentDisc();
+  if (disc && disc.mp3Path) {
+    STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
+  }
+});
 audio.addEventListener('ended', () => { btnPlay.innerHTML = '&#9654;'; });
+
+window.addEventListener('beforeunload', () => {
+  const disc = currentDisc();
+  if (disc && disc.mp3Path) {
+    STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
+  }
+});
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 btnPlay.addEventListener('click', () => {
@@ -484,6 +556,14 @@ seekBar.addEventListener('change', () => {
 });
 
 volumeBar.addEventListener('input', () => { audio.volume = volumeBar.value; });
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === ' ') { e.preventDefault(); btnPlay.click(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); btnPrev.click(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); btnNext.click(); }
+});
 
 // ── Filter ────────────────────────────────────────────────────────────────────
 filterInput.addEventListener('input', () => applyFilter(filterInput.value));
