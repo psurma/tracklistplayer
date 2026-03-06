@@ -130,16 +130,17 @@ input[type="range"] {
 #seek-ticks {
   position: absolute; left: 0; right: 0;
   top: 50%; transform: translateY(-50%);
-  height: 14px; pointer-events: none;
+  height: 16px; pointer-events: none; z-index: 1;
 }
 .seek-tick {
   position: absolute; top: 0;
-  width: 2px; height: 14px;
-  background: rgba(255,255,255,0.35);
+  width: 2px; height: 16px;
+  background: var(--accent);
+  opacity: 0.55;
   transform: translateX(-50%);
   border-radius: 1px;
 }
-.seek-tick:hover { background: rgba(255,255,255,0.8); }
+.seek-tick:hover { opacity: 1; }
 #volume-bar { width: 80px; }
 
 input[type="range"]::-webkit-slider-thumb {

@@ -397,7 +397,6 @@ function loadDisc(disc) {
   updateNowPlaying(-1);
   highlightTrackInSidebar(disc.id, -1);
   loadWaveform(disc);
-  updateSeekTicks();
 }
 
 function playDiscAtTrack(disc, trackIdx) {
@@ -422,6 +421,7 @@ function playDiscAtTrack(disc, trackIdx) {
   function seekAndPlay() {
     audio.currentTime = startSecs;
     audio.play().catch(() => {});
+    updateSeekTicks();
     audio.removeEventListener('loadedmetadata', seekAndPlay);
   }
 
