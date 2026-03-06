@@ -66,6 +66,8 @@ const sidebar       = document.getElementById('sidebar');
 const btnPlay       = document.getElementById('btn-play');
 const btnPrev       = document.getElementById('btn-prev');
 const btnNext       = document.getElementById('btn-next');
+const btnShuffle    = document.getElementById('btn-shuffle');
+const btnRepeat     = document.getElementById('btn-repeat');
 const seekBar       = document.getElementById('seek-bar');
 const timeCurrent   = document.getElementById('time-current');
 const timeTotal     = document.getElementById('time-total');
@@ -95,6 +97,8 @@ const STORAGE = {
   getBrowserH:    ()    => localStorage.getItem('tlp_browser_h') || '40',
   getWaveformOn:  ()    => localStorage.getItem('tlp_waveform') !== 'off',
   setWaveformOn:  (v)   => localStorage.setItem('tlp_waveform', v ? 'on' : 'off'),
+  getMainTopH:    ()    => parseInt(localStorage.getItem('tlp_main_top_h'), 10) || 0,
+  setMainTopH:    (v)   => localStorage.setItem('tlp_main_top_h', String(v)),
   setBrowserH: (v)   => localStorage.setItem('tlp_browser_h', String(v)),
   getFavs:     ()    => JSON.parse(localStorage.getItem('tlp_favorites') || '[]'),
   setFavs:     (arr) => localStorage.setItem('tlp_favorites', JSON.stringify(arr)),
@@ -238,7 +242,14 @@ async function loadFolderBrowser(dir) {
 }
 
 // ── NFO pane ──────────────────────────────────────────────────────────────────
-const nfoPane      = document.getElementById('nfo-pane');
+const nfoPane       = document.getElementById('nfo-pane');
+const mainResizeH   = document.getElementById('main-resize-h');
+const mainTop       = document.getElementById('main-top');
+
+function setNfoPaneVisible(visible) {
+  nfoPane.classList.toggle('hidden', !visible);
+  mainResizeH.classList.toggle('hidden', !visible);
+}
 const nfoContent   = document.getElementById('nfo-content');
 const nfoPaneName  = document.getElementById('nfo-pane-name');
 const nfoPaneClose = document.getElementById('nfo-pane-close');
@@ -283,21 +294,21 @@ async function showNfo(dir) {
     lastNfoText = text;
     nfoPaneName.textContent = dir.split('/').pop();
     highlightNfo();
-    nfoPane.classList.remove('hidden');
+    setNfoPaneVisible(true);
     nfoBtn.classList.add('hidden'); // hide toggle while pane is open
   } catch (_) {
-    nfoPane.classList.add('hidden');
+    setNfoPaneVisible(false);
     nfoBtn.classList.add('hidden');
   }
 }
 
 nfoPaneClose.addEventListener('click', () => {
-  nfoPane.classList.add('hidden');
+  setNfoPaneVisible(false);
   if (lastNfoDir) nfoBtn.classList.remove('hidden');
 });
 
 nfoBtn.addEventListener('click', () => {
-  nfoPane.classList.remove('hidden');
+  setNfoPaneVisible(true);
   nfoBtn.classList.add('hidden');
 });
 
@@ -570,7 +581,10 @@ audio.addEventListener('timeupdate', () => {
   const ct = audio.currentTime;
   const dur = audio.duration;
   timeCurrent.textContent = formatTime(ct);
-  if (isFinite(dur)) { timeTotal.textContent = formatTime(dur); seekBar.value = (ct / dur) * 100; }
+  if (isFinite(dur)) {
+    timeTotal.textContent = showRemaining ? `-${formatTime(dur - ct)}` : formatTime(dur);
+    seekBar.value = (ct / dur) * 100;
+  }
   const newIdx = detectCurrentTrack(ct);
   if (newIdx !== state.currentTrackIndex) {
     state.currentTrackIndex = newIdx;
@@ -605,7 +619,19 @@ audio.addEventListener('pause', () => {
     STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
   }
 });
-audio.addEventListener('ended', () => { btnPlay.innerHTML = '&#9654;'; });
+audio.addEventListener('ended', () => {
+  btnPlay.innerHTML = '&#9654;';
+  const disc = currentDisc();
+  if (!disc) return;
+  if (repeatMode === 'one') {
+    const t = disc.tracks[state.currentTrackIndex];
+    audio.currentTime = t ? t.startSeconds : 0;
+    audio.play().catch(() => {});
+  } else {
+    const next = nextTrackIndex(disc, state.currentTrackIndex);
+    if (next >= 0) playDiscAtTrack(disc, next);
+  }
+});
 
 window.addEventListener('beforeunload', () => {
   const disc = currentDisc();
@@ -631,8 +657,8 @@ btnPrev.addEventListener('click', () => {
 btnNext.addEventListener('click', () => {
   const disc = currentDisc();
   if (!disc) return;
-  const idx = state.currentTrackIndex;
-  if (idx < disc.tracks.length - 1) playDiscAtTrack(disc, idx + 1);
+  const next = nextTrackIndex(disc, state.currentTrackIndex);
+  if (next >= 0) playDiscAtTrack(disc, next);
 });
 
 seekBar.addEventListener('mousedown', () => { state.seeking = true; });
@@ -658,6 +684,44 @@ document.addEventListener('keydown', (e) => {
   if (e.key === ' ') { e.preventDefault(); btnPlay.click(); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); btnPrev.click(); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); btnNext.click(); }
+});
+
+// ── Shuffle & repeat ──────────────────────────────────────────────────────────
+let shuffleOn  = false;
+let repeatMode = 'off'; // 'off' | 'all' | 'one'
+
+function setShuffleOn(on) {
+  shuffleOn = on;
+  btnShuffle.classList.toggle('active', on);
+  btnShuffle.title = on ? 'Shuffle on' : 'Shuffle';
+}
+
+function cycleRepeat() {
+  repeatMode = repeatMode === 'off' ? 'all' : repeatMode === 'all' ? 'one' : 'off';
+  btnRepeat.classList.toggle('active', repeatMode !== 'off');
+  btnRepeat.title = repeatMode === 'one' ? 'Repeat one' : repeatMode === 'all' ? 'Repeat all' : 'Repeat';
+  btnRepeat.innerHTML = repeatMode === 'one' ? '&#x21BB;<sup style="font-size:8px">1</sup>' : '&#x21BB;';
+}
+
+function nextTrackIndex(disc, currentIdx) {
+  if (shuffleOn && disc.tracks.length > 1) {
+    let idx;
+    do { idx = Math.floor(Math.random() * disc.tracks.length); } while (idx === currentIdx);
+    return idx;
+  }
+  if (currentIdx < disc.tracks.length - 1) return currentIdx + 1;
+  return repeatMode === 'all' ? 0 : -1;
+}
+
+btnShuffle.addEventListener('click', () => setShuffleOn(!shuffleOn));
+btnRepeat.addEventListener('click', cycleRepeat);
+
+// ── Time remaining toggle ──────────────────────────────────────────────────────
+let showRemaining = false;
+timeTotal.style.minWidth = '42px';
+timeTotal.addEventListener('click', () => {
+  showRemaining = !showRemaining;
+  timeTotal.style.color = showRemaining ? 'var(--accent)' : '';
 });
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -805,6 +869,39 @@ function initPanelResize() {
   });
 }
 
+// ── Main pane resize (between top section and NFO) ────────────────────────────
+function initMainResize() {
+  const saved = STORAGE.getMainTopH();
+  if (saved) mainTop.style.height = `${saved}px`;
+
+  let startY = 0, startH = 0;
+
+  mainResizeH.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = mainTop.offsetHeight;
+    mainResizeH.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!mainResizeH.classList.contains('dragging')) return;
+    const main = document.getElementById('main');
+    const newH = Math.max(80, Math.min(main.offsetHeight - 80, startH + e.clientY - startY));
+    mainTop.style.height = `${newH}px`;
+    STORAGE.setMainTopH(newH);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (mainResizeH.classList.contains('dragging')) {
+      mainResizeH.classList.remove('dragging');
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   loadFavorites();
@@ -826,6 +923,7 @@ async function init() {
   setSidebarCollapsed(false);
   initSidebarResize();
   initPanelResize();
+  initMainResize();
 
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
   (function waveformLoop() {

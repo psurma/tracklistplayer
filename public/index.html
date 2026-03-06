@@ -44,6 +44,9 @@
         <button id="waveform-toggle" title="Toggle spectrum analyzer">Spectrum</button>
       </div>
 
+      <!-- Top section (resizable) -->
+      <div id="main-top">
+
       <!-- Now playing -->
       <div id="now-playing">
         <div id="np-label">NOW PLAYING</div>
@@ -64,7 +67,10 @@
         <div id="wf-status" class="hidden">Analyzing audio…</div>
         <div id="wf-overview-wrap"><canvas id="wf-overview"></canvas></div>
         <div id="wf-zoom-wrap"><canvas id="wf-zoom"></canvas></div>
-      </div>
+      </div><!-- /waveform-section -->
+
+      </div><!-- /main-top -->
+      <div id="main-resize-h" class="hidden"></div>
 
       <!-- NFO content -->
       <div id="nfo-pane" class="hidden">
@@ -89,9 +95,11 @@
     </div>
 
     <div id="controls">
+      <button id="btn-shuffle" title="Shuffle">&#x21C4;</button>
       <button id="btn-prev" title="Previous track">&#9664;&#9664;</button>
       <button id="btn-play" title="Play / Pause">&#9654;</button>
       <button id="btn-next" title="Next track">&#9654;&#9654;</button>
+      <button id="btn-repeat" title="Repeat">&#x21BB;</button>
     </div>
 
     <div id="seek-row">
@@ -100,7 +108,7 @@
         <input type="range" id="seek-bar" min="0" max="100" step="0.1" value="0" />
         <div id="seek-ticks"></div>
       </div>
-      <span id="time-total">0:00</span>
+      <span id="time-total" title="Click to toggle remaining time">0:00</span>
     </div>
 
     <div id="volume-row">

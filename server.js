@@ -187,12 +187,16 @@ app.get('/api/waveform', async (req, res) => {
   const p95 = sorted[Math.floor(sorted.length * 0.95)] || 1;
   const peakScale = 254 / p95;
 
-  let freqMax = 0;
-  for (let b = 0; b < numBuckets; b++) {
-    const m = Math.max(rBass[b], rMids[b], rHighs[b]);
-    if (m > freqMax) freqMax = m;
+  // Normalise each band independently to its own 95th percentile so all
+  // three channels span the full 0-255 range and colours stay balanced.
+  function bandScale(arr) {
+    const s = Float32Array.from(arr).sort();
+    const p = s[Math.floor(s.length * 0.95)] || 1;
+    return 254 / p;
   }
-  const freqScale = freqMax > 0 ? 254 / freqMax : 0;
+  const bassScale  = bandScale(rBass);
+  const midsScale  = bandScale(rMids);
+  const highsScale = bandScale(rHighs);
 
   const peaks = new Uint8Array(numBuckets);
   const bass  = new Uint8Array(numBuckets);
@@ -200,9 +204,9 @@ app.get('/api/waveform', async (req, res) => {
   const highs = new Uint8Array(numBuckets);
   for (let b = 0; b < numBuckets; b++) {
     peaks[b] = Math.min(255, Math.round(rPeaks[b] * peakScale));
-    bass[b]  = Math.min(255, Math.round(rBass[b]  * freqScale));
-    mids[b]  = Math.min(255, Math.round(rMids[b]  * freqScale));
-    highs[b] = Math.min(255, Math.round(rHighs[b] * freqScale));
+    bass[b]  = Math.min(255, Math.round(rBass[b]  * bassScale));
+    mids[b]  = Math.min(255, Math.round(rMids[b]  * midsScale));
+    highs[b] = Math.min(255, Math.round(rHighs[b] * highsScale));
   }
 
   const result = {
