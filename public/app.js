@@ -487,7 +487,6 @@ function renderDiscList() {
 // ── API ───────────────────────────────────────────────────────────────────────
 async function scanDirectory(dir) {
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
-  STORAGE.setDir(dir);
   currentWfPath = null;
   waveformRenderer.clear();
   wfSection.classList.add('hidden');
