@@ -149,17 +149,18 @@ ipcMain.handle('set-mini-player', (_event, mini) => {
   if (!mainWindow) return;
   if (mini) {
     preMiniState = mainWindow.getBounds();
-    const { x, y, width } = preMiniState;
+    const { x, y, width, height } = preMiniState;
     mainWindow.setAlwaysOnTop(true);
     mainWindow.setResizable(false);
     mainWindow.setMinimumSize(400, 80);
-    mainWindow.setBounds({ x, y, width: Math.max(width, 500), height: 80 });
+    // Anchor bottom edge so the window slides down rather than jumping to the top
+    mainWindow.setBounds({ x, y: y + height - 80, width: Math.max(width, 500), height: 80 }, true);
   } else {
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setResizable(true);
     if (preMiniState) {
       mainWindow.setMinimumSize(600, 400);
-      mainWindow.setBounds(preMiniState);
+      mainWindow.setBounds(preMiniState, true);
       preMiniState = null;
     }
   }
