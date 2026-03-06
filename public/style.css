@@ -320,7 +320,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 #now-playing {
   flex-shrink: 0;
   text-align: center;
-  padding: 32px 20px 20px;
+  padding: 20px 20px 16px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -401,6 +401,27 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 #nfo-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 mark.nfo-hl { background: var(--accent); color: #000; border-radius: 2px; padding: 0 1px; }
+
+/* ── Waveform ────────────────────────────────────────── */
+#waveform-section {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: no-drag;
+  position: relative;
+}
+#wf-overview-wrap { height: 50px; cursor: pointer; overflow: hidden; }
+#wf-zoom-wrap     { height: 110px; cursor: pointer; overflow: hidden; }
+#wf-overview-wrap canvas,
+#wf-zoom-wrap canvas { display: block; width: 100%; height: 100%; }
+#wf-status {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px; color: var(--text-muted); z-index: 2;
+  pointer-events: none;
+}
+
+/* Electron: push first sidebar row right so traffic lights don't overlap */
+body.electron #dir-bar { padding-left: 76px; }
 
 /* Electron: drag window from blank areas in main panel */
 #main { -webkit-app-region: drag; }

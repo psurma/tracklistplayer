@@ -1,5 +1,10 @@
 'use strict';
 
+// Tag body when running inside Electron (for traffic-light padding CSS)
+if (navigator.userAgent.includes('Electron')) {
+  document.body.classList.add('electron');
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   discs: [],
@@ -10,6 +15,41 @@ const state = {
   browseDir: '',          // currently browsed folder (folder browser)
   favorites: new Set(),   // keys: "mp3File:trackNumber"
 };
+
+// ── Waveform renderer ─────────────────────────────────────────────────────────
+const wfSection  = document.getElementById('waveform-section');
+const wfStatus   = document.getElementById('wf-status');
+const waveformRenderer = new WaveformRenderer(
+  document.getElementById('wf-overview'),
+  document.getElementById('wf-zoom'),
+  (t) => {
+    if (!isFinite(audio.duration)) return;
+    audio.currentTime = t;
+    seekBar.value = (t / audio.duration) * 100;
+    timeCurrent.textContent = formatTime(t);
+  }
+);
+
+let currentWfPath = null;
+async function loadWaveform(disc) {
+  if (!disc.mp3Path || disc.mp3Path === currentWfPath) return;
+  currentWfPath = disc.mp3Path;
+  wfSection.classList.remove('hidden');
+  wfStatus.classList.remove('hidden');
+  waveformRenderer.clear();
+  try {
+    const res = await fetch(`/api/waveform?path=${encodeURIComponent(disc.mp3Path)}`);
+    if (!res.ok) throw new Error('waveform failed');
+    const data = await res.json();
+    const d = state.discs.find((x) => x.id === disc.id);
+    waveformRenderer.load(data, d ? d.tracks : []);
+    wfStatus.classList.add('hidden');
+  } catch (_) {
+    wfSection.classList.add('hidden');
+    wfStatus.classList.add('hidden');
+    currentWfPath = null;
+  }
+}
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const audio         = document.getElementById('audio');
@@ -326,6 +366,7 @@ function loadDisc(disc) {
   audio.load();
   updateNowPlaying(-1);
   highlightTrackInSidebar(disc.id, -1);
+  loadWaveform(disc);
 }
 
 function playDiscAtTrack(disc, trackIdx) {
@@ -343,6 +384,7 @@ function playDiscAtTrack(disc, trackIdx) {
   state.currentTrackIndex = trackIdx;
   updateNowPlaying(trackIdx);
   highlightTrackInSidebar(disc.id, trackIdx);
+  loadWaveform(disc);
 
   const startSecs = disc.tracks[trackIdx] ? disc.tracks[trackIdx].startSeconds : 0;
 
@@ -441,6 +483,9 @@ function renderDiscList() {
 async function scanDirectory(dir) {
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
   STORAGE.setDir(dir);
+  currentWfPath = null;
+  waveformRenderer.clear();
+  wfSection.classList.add('hidden');
 
   try {
     const res = await fetch(`/api/scan?dir=${encodeURIComponent(dir)}`);
@@ -487,6 +532,7 @@ audio.addEventListener('timeupdate', () => {
   const dur = audio.duration;
   timeCurrent.textContent = formatTime(ct);
   if (isFinite(dur)) { timeTotal.textContent = formatTime(dur); seekBar.value = (ct / dur) * 100; }
+  waveformRenderer.update(ct);
   const newIdx = detectCurrentTrack(ct);
   if (newIdx !== state.currentTrackIndex) {
     state.currentTrackIndex = newIdx;
@@ -552,7 +598,11 @@ seekBar.addEventListener('mousedown', () => { state.seeking = true; });
 document.addEventListener('mouseup', () => { state.seeking = false; });
 
 seekBar.addEventListener('input', () => {
-  if (isFinite(audio.duration)) timeCurrent.textContent = formatTime((seekBar.value / 100) * audio.duration);
+  if (isFinite(audio.duration)) {
+    const t = (seekBar.value / 100) * audio.duration;
+    timeCurrent.textContent = formatTime(t);
+    waveformRenderer.update(t);
+  }
 });
 
 seekBar.addEventListener('change', () => {

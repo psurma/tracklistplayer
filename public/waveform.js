@@ -1,0 +1,212 @@
+'use strict';
+
+// ── WaveformRenderer ──────────────────────────────────────────────────────────
+// Renders a full-track overview canvas and a 30-second zoom canvas.
+// Data comes from /api/waveform (Uint8 arrays, base64-encoded).
+
+class WaveformRenderer {
+  constructor(overviewCanvas, zoomCanvas, onSeek) {
+    this.ov = overviewCanvas;
+    this.zm = zoomCanvas;
+    this.onSeek = onSeek;
+
+    this.peaks = null;
+    this.bass  = null;
+    this.mids  = null;
+    this.highs = null;
+    this.numBuckets = 0;
+    this.bucketSecs = 0.1;
+    this.duration   = 0;
+    this.tracks     = [];
+    this.currentTime = 0;
+    this._raf = null;
+
+    this._bindEvents();
+  }
+
+  // Load waveform from API response + CUE track list
+  load(apiData, tracks) {
+    const dec = (b64) => {
+      const bin = atob(b64);
+      const u8  = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    };
+    this.peaks = dec(apiData.peaks);
+    this.bass  = dec(apiData.bass);
+    this.mids  = dec(apiData.mids);
+    this.highs = dec(apiData.highs);
+    this.numBuckets = apiData.numBuckets;
+    this.bucketSecs = apiData.bucketSecs;
+    this.duration   = apiData.duration;
+    this.tracks     = tracks || [];
+    this._schedule();
+  }
+
+  update(currentTime) {
+    this.currentTime = currentTime;
+    this._schedule();
+  }
+
+  clear() {
+    this.peaks = null;
+    this._clearCanvas(this.ov);
+    this._clearCanvas(this.zm);
+  }
+
+  // ── Private ─────────────────────────────────────────────────────────────────
+
+  _schedule() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = null;
+      if (this.peaks) { this._renderOverview(); this._renderZoom(); }
+    });
+  }
+
+  _setup(canvas) {
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const W    = Math.round(rect.width);
+    const H    = Math.round(rect.height);
+    const pw   = Math.round(W * dpr);
+    const ph   = Math.round(H * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width  = pw;
+      canvas.height = ph;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, W, H };
+  }
+
+  _clearCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+  }
+
+  // bass/mid/high are 0-255 → RGB colour similar to DJay's palette
+  _color(b, m, h) {
+    const r  = Math.min(255, (b * 1.5 + h * 0.4) | 0);
+    const g  = Math.min(255, (m * 1.3 + b * 0.2) | 0);
+    const bl = Math.min(255, (h * 1.6 + m * 0.3) | 0);
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  _renderOverview() {
+    const { ctx, W, H } = this._setup(this.ov);
+    const { peaks, bass, mids, highs, numBuckets, duration } = this;
+
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, W, H);
+
+    const bpp = numBuckets / W; // buckets per pixel
+
+    for (let x = 0; x < W; x++) {
+      const b0 = Math.floor(x * bpp);
+      const b1 = Math.min(Math.ceil((x + 1) * bpp), numBuckets);
+      if (b0 >= b1) continue;
+
+      let pMax = 0, bSum = 0, mSum = 0, hSum = 0;
+      for (let b = b0; b < b1; b++) {
+        if (peaks[b] > pMax) pMax = peaks[b];
+        bSum += bass[b]; mSum += mids[b]; hSum += highs[b];
+      }
+      const n = b1 - b0;
+      const barH = (pMax / 255) * H;
+      ctx.fillStyle = this._color(bSum / n, mSum / n, hSum / n);
+      ctx.fillRect(x, H - barH, 1, barH);
+    }
+
+    // Played-region darken
+    const px = Math.floor((this.currentTime / duration) * W);
+    ctx.fillStyle = 'rgba(0,0,0,0.42)';
+    ctx.fillRect(0, 0, px, H);
+
+    // Track markers
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (const t of this.tracks) {
+      const x = Math.round((t.startSeconds / duration) * W);
+      ctx.fillRect(x, 0, 1, H);
+    }
+
+    // Playhead
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(Math.max(0, px - 1), 0, 2, H);
+  }
+
+  _renderZoom() {
+    const { ctx, W, H } = this._setup(this.zm);
+    const { peaks, bass, mids, highs, numBuckets, bucketSecs, duration } = this;
+    const ct = this.currentTime;
+
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, W, H);
+
+    const ZOOM = 30; // seconds visible
+    const tStart      = ct - ZOOM / 2;
+    const tEnd        = ct + ZOOM / 2;
+    const bStart      = Math.max(0, Math.floor(tStart / bucketSecs));
+    const bEnd        = Math.min(numBuckets, Math.ceil(tEnd / bucketSecs));
+    const pxPerSec    = W / ZOOM;
+    const pxPerBucket = Math.max(1, Math.ceil(pxPerSec * bucketSecs));
+    const half        = H / 2;
+
+    for (let b = bStart; b < bEnd; b++) {
+      const bTime = b * bucketSecs;
+      const x     = Math.floor((bTime - tStart) * pxPerSec);
+      const barH  = (peaks[b] / 255) * half * 0.92;
+      ctx.fillStyle = this._color(bass[b], mids[b], highs[b]);
+      ctx.fillRect(x, half - barH, pxPerBucket, barH * 2);
+    }
+
+    // Track markers + labels
+    ctx.font = '10px "SF Mono", "Fira Code", Consolas, monospace';
+    for (const t of this.tracks) {
+      if (t.startSeconds < tStart - 2 || t.startSeconds > tEnd + 2) continue;
+      const x = Math.round((t.startSeconds - tStart) * pxPerSec);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillRect(x, 0, 1, H);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillText(String(t.track).padStart(2, '0'), x + 3, 11);
+    }
+
+    // Centre playhead
+    const cx = Math.round(W / 2);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(cx, 0, 2, H);
+
+    // Current time label
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '11px "SF Mono", "Fira Code", Consolas, monospace';
+    ctx.fillText(this._fmt(ct), cx + 5, H - 5);
+  }
+
+  _fmt(s) {
+    if (!isFinite(s) || s < 0) return '0:00';
+    return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  }
+
+  _bindEvents() {
+    this.ov.addEventListener('click', (e) => {
+      if (!this.duration) return;
+      const r = this.ov.getBoundingClientRect();
+      this.onSeek(Math.max(0, Math.min(this.duration,
+        ((e.clientX - r.left) / r.width) * this.duration
+      )));
+    });
+
+    this.zm.addEventListener('click', (e) => {
+      if (!this.duration) return;
+      const r    = this.zm.getBoundingClientRect();
+      const ZOOM = 30;
+      const t    = (this.currentTime - ZOOM / 2) + ((e.clientX - r.left) / r.width) * ZOOM;
+      this.onSeek(Math.max(0, Math.min(this.duration, t)));
+    });
+
+    // Re-render when the container resizes
+    const ro = new ResizeObserver(() => this._schedule());
+    ro.observe(this.ov.parentElement);
+  }
+}

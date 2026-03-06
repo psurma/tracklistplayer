@@ -58,6 +58,13 @@
         </div>
       </div>
 
+      <!-- Waveform -->
+      <div id="waveform-section" class="hidden">
+        <div id="wf-status" class="hidden">Analyzing audio…</div>
+        <div id="wf-overview-wrap"><canvas id="wf-overview"></canvas></div>
+        <div id="wf-zoom-wrap"><canvas id="wf-zoom"></canvas></div>
+      </div>
+
       <!-- NFO content -->
       <div id="nfo-pane" class="hidden">
         <div id="nfo-pane-header">
@@ -92,6 +99,7 @@
     </div>
   </footer>
 
+  <script src="waveform.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

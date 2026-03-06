@@ -2,11 +2,38 @@
 
 const { app, BrowserWindow, globalShortcut, ipcMain, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
-// Start the Express server in-process
+// ── Window state persistence ──────────────────────────────────────────────────
+const stateFile = path.join(app.getPath('userData'), 'window-state.json');
+
+function loadWindowState() {
+  try {
+    return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (_) {
+    return { width: 1280, height: 800, isMaximized: false };
+  }
+}
+
+function saveWindowState(win) {
+  if (win.isMinimized()) return;
+  const state = { isMaximized: win.isMaximized() };
+  if (!win.isMaximized()) {
+    const b = win.getBounds();
+    state.x = b.x; state.y = b.y;
+    state.width = b.width; state.height = b.height;
+  } else {
+    // Preserve last non-maximized bounds so we have them after un-maximizing
+    const prev = loadWindowState();
+    state.x = prev.x; state.y = prev.y;
+    state.width = prev.width || 1280; state.height = prev.height || 800;
+  }
+  try { fs.writeFileSync(stateFile, JSON.stringify(state)); } catch (_) {}
+}
+
+// ── Express server ────────────────────────────────────────────────────────────
 let server;
 function startServer() {
-  // Pass any CLI args (skip first two: electron + main.js)
   const args = process.argv.slice(2);
   if (args.length > 0) {
     process.argv = [process.argv[0], process.argv[1], ...args];
@@ -17,20 +44,39 @@ function startServer() {
 let mainWindow;
 
 function createWindow() {
+  const state = loadWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    x: state.x,
+    y: state.y,
+    width:  state.width  || 1280,
+    height: state.height || 800,
     minWidth: 600,
     minHeight: 400,
     title: 'Tracklist Player',
     backgroundColor: '#111114',
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
     },
-    // macOS: show traffic lights but no title bar text
+    // macOS: inline traffic lights, positioned so they don't overlap the dir input
     titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 14 },
   });
+
+  if (state.isMaximized) mainWindow.maximize();
+
+  // Save state on move/resize (debounced)
+  let saveTimer = null;
+  const scheduleSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveWindowState(mainWindow), 500);
+  };
+  mainWindow.on('resize', scheduleSave);
+  mainWindow.on('move',   scheduleSave);
+  mainWindow.on('maximize',   () => saveWindowState(mainWindow));
+  mainWindow.on('unmaximize', () => saveWindowState(mainWindow));
 
   // Prevent navigation away from the app
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -40,32 +86,29 @@ function createWindow() {
     }
   });
 
-  // Open external links (Spotify etc) in the default browser
+  // Open external links (Spotify, SoundCloud) in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  // Disable default menu bar (keeps CMD+Q etc on macOS)
   mainWindow.setMenuBarVisibility(false);
-
   mainWindow.loadURL('http://localhost:3123');
+
+  mainWindow.once('ready-to-show', () => mainWindow.show());
 }
 
 function registerMediaKeys() {
-  // These fire even when the window is in the background
   globalShortcut.register('MediaPlayPause', () => {
     mainWindow?.webContents.executeJavaScript(
       'document.getElementById("btn-play")?.click()'
     );
   });
-
   globalShortcut.register('MediaNextTrack', () => {
     mainWindow?.webContents.executeJavaScript(
       'document.getElementById("btn-next")?.click()'
     );
   });
-
   globalShortcut.register('MediaPreviousTrack', () => {
     mainWindow?.webContents.executeJavaScript(
       'document.getElementById("btn-prev")?.click()'
@@ -75,33 +118,25 @@ function registerMediaKeys() {
 
 app.whenReady().then(() => {
   startServer();
-  // Give the server a moment to bind before loading the URL
   setTimeout(() => {
     createWindow();
     registerMediaKeys();
   }, 300);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  if (server && server.close) {
-    server.close();
-  }
+  if (server && server.close) server.close();
 });
 
-// Handle show-in-finder calls from renderer (alternative to /api/reveal)
 ipcMain.handle('reveal-in-finder', (_event, filePath) => {
   shell.showItemInFolder(filePath);
 });

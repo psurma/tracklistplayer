@@ -115,6 +115,109 @@ app.get('/api/nfo', async (req, res) => {
   }
 });
 
+// Waveform cache (in-memory, keyed by absolute mp3 path)
+const waveformCache = new Map();
+
+// GET /api/waveform?path=<absolute mp3 path>
+// Uses ffmpeg to decode audio at low sample rate, returns per-bucket amplitude + frequency data
+app.get('/api/waveform', async (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+
+  if (waveformCache.has(filePath)) return res.json(waveformCache.get(filePath));
+
+  try { await fs.promises.access(filePath); }
+  catch (_) { return res.status(404).json({ error: 'File not found' }); }
+
+  const { spawn } = require('child_process');
+  const SAMPLE_RATE = 2000;
+  const SAMPLES_PER_BUCKET = 200; // 100 ms per bucket
+
+  const ff = spawn('ffmpeg', [
+    '-i', filePath,
+    '-ac', '1', '-ar', String(SAMPLE_RATE),
+    '-f', 'f32le', 'pipe:1',
+  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+  const bufs = [];
+  ff.stdout.on('data', (c) => bufs.push(c));
+  const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
+  if (code !== 0) return res.status(500).json({ error: 'ffmpeg decode failed' });
+
+  const raw = Buffer.concat(bufs);
+  const numSamples = Math.floor(raw.length / 4);
+  // Create a float32 view directly over the node Buffer's memory
+  const floats = new Float32Array(raw.buffer, raw.byteOffset, numSamples);
+  const duration = numSamples / SAMPLE_RATE;
+  const numBuckets = Math.ceil(numSamples / SAMPLES_PER_BUCKET);
+
+  const rPeaks = new Float32Array(numBuckets);
+  const rBass  = new Float32Array(numBuckets);
+  const rMids  = new Float32Array(numBuckets);
+  const rHighs = new Float32Array(numBuckets);
+
+  // One-pole IIR low-pass: y[n] = a*|x[n]| + (1-a)*y[n-1]
+  // At 2 kHz: a=0.08 → fc≈25 Hz (bass), a=0.40 → fc≈175 Hz (bass/mid boundary)
+  const A_BASS = 0.08;
+  const A_MID  = 0.40;
+  let loBass = 0, loMid = 0;
+
+  for (let b = 0; b < numBuckets; b++) {
+    const s = b * SAMPLES_PER_BUCKET;
+    const e = Math.min(s + SAMPLES_PER_BUCKET, numSamples);
+    let peak = 0, bSum = 0, mSum = 0, hSum = 0;
+    for (let i = s; i < e; i++) {
+      const x = Math.abs(floats[i]);
+      if (x > peak) peak = x;
+      loBass = A_BASS * x + (1 - A_BASS) * loBass;
+      loMid  = A_MID  * x + (1 - A_MID)  * loMid;
+      bSum += loBass;
+      mSum += Math.max(0, loMid - loBass);
+      hSum += Math.max(0, x - loMid);
+    }
+    const n = e - s;
+    rPeaks[b] = peak;
+    rBass[b]  = bSum / n;
+    rMids[b]  = mSum / n;
+    rHighs[b] = hSum / n;
+  }
+
+  // Normalise peaks to 95th percentile for better dynamic range
+  const sorted = Float32Array.from(rPeaks).sort();
+  const p95 = sorted[Math.floor(sorted.length * 0.95)] || 1;
+  const peakScale = 254 / p95;
+
+  let freqMax = 0;
+  for (let b = 0; b < numBuckets; b++) {
+    const m = Math.max(rBass[b], rMids[b], rHighs[b]);
+    if (m > freqMax) freqMax = m;
+  }
+  const freqScale = freqMax > 0 ? 254 / freqMax : 0;
+
+  const peaks = new Uint8Array(numBuckets);
+  const bass  = new Uint8Array(numBuckets);
+  const mids  = new Uint8Array(numBuckets);
+  const highs = new Uint8Array(numBuckets);
+  for (let b = 0; b < numBuckets; b++) {
+    peaks[b] = Math.min(255, Math.round(rPeaks[b] * peakScale));
+    bass[b]  = Math.min(255, Math.round(rBass[b]  * freqScale));
+    mids[b]  = Math.min(255, Math.round(rMids[b]  * freqScale));
+    highs[b] = Math.min(255, Math.round(rHighs[b] * freqScale));
+  }
+
+  const result = {
+    duration,
+    numBuckets,
+    bucketSecs: SAMPLES_PER_BUCKET / SAMPLE_RATE,
+    peaks: Buffer.from(peaks).toString('base64'),
+    bass:  Buffer.from(bass).toString('base64'),
+    mids:  Buffer.from(mids).toString('base64'),
+    highs: Buffer.from(highs).toString('base64'),
+  };
+  waveformCache.set(filePath, result);
+  res.json(result);
+});
+
 // GET /api/reveal?path=<absolute path> — reveal file/folder in Finder (macOS)
 app.get('/api/reveal', (req, res) => {
   const target = req.query.path;

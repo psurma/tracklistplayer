@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0] - 2026-03-06
+
+### Added
+- DJay-style waveform display: colorful overview (full track) + 30-second zoom view with scrolling playhead
+  - Server-side analysis via ffmpeg: decodes MP3 to mono 2kHz PCM, computes per-bucket amplitude and bass/mid/high frequency energy
+  - Frequency colour mapping: bass→red, mids→green, highs→blue (blended per bucket)
+  - Track boundary markers with track numbers on the zoom view
+  - Click either canvas to seek
+  - Waveform data cached in memory (no re-analysis on replay)
+- Electron window state persistence: size, position and maximized state saved across sessions
+- Traffic lights no longer overlap the directory input (padding + `trafficLightPosition`)
+
 ## [1.1.1] - 2026-03-06
 
 ### Added
