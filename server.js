@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { findCueMp3Pairs } = require('./lib/cueParser');
+const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
 
 const app = express();
 const PORT = 3123;
@@ -124,14 +124,16 @@ app.get('/api/waveform', async (req, res) => {
   const filePath = req.query.path;
   if (!filePath) return res.status(400).json({ error: 'path required' });
 
-  if (waveformCache.has(filePath)) return res.json(waveformCache.get(filePath));
+  const bucketMs = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
+  const cacheKey = `${filePath}@${bucketMs}`;
+  if (waveformCache.has(cacheKey)) return res.json(waveformCache.get(cacheKey));
 
   try { await fs.promises.access(filePath); }
   catch (_) { return res.status(404).json({ error: 'File not found' }); }
 
   const { spawn } = require('child_process');
   const SAMPLE_RATE = 2000;
-  const SAMPLES_PER_BUCKET = 200; // 100 ms per bucket
+  const SAMPLES_PER_BUCKET = Math.round(SAMPLE_RATE * bucketMs / 1000);
 
   const ff = spawn('ffmpeg', [
     '-i', filePath,
@@ -218,8 +220,169 @@ app.get('/api/waveform', async (req, res) => {
     mids:  Buffer.from(mids).toString('base64'),
     highs: Buffer.from(highs).toString('base64'),
   };
-  waveformCache.set(filePath, result);
+  waveformCache.set(cacheKey, result);
   res.json(result);
+});
+
+// Music index cache (keyed by root dir)
+const indexCache = new Map();
+
+// Recursively scan rootDir (BFS, max depth 5) and build a flat array of disc records
+async function buildMusicIndex(rootDir) {
+  const yearRe = /\b(19\d{2}|20[012]\d)\b/;
+  const results = [];
+  const visited = new Set();
+  const queue = [{ dir: rootDir, depth: 0 }];
+
+  while (queue.length > 0) {
+    // Process up to 20 dirs concurrently
+    const batch = queue.splice(0, 20);
+    await Promise.all(batch.map(async ({ dir, depth }) => {
+      if (visited.has(dir)) return;
+      visited.add(dir);
+
+      const pairs = await scanDirAsync(dir);
+      if (pairs.length > 0) {
+        const yearMatch = path.basename(dir).match(yearRe);
+        const year = yearMatch ? yearMatch[1] : '';
+        for (const pair of pairs) {
+          results.push({
+            dir,
+            mp3Path: pair.mp3File || null,
+            mp3File: pair.mp3File ? path.basename(pair.mp3File) : null,
+            albumTitle: pair.albumTitle,
+            albumPerformer: pair.albumPerformer,
+            year,
+            tracks: pair.tracks,
+          });
+        }
+      } else if (depth < 5) {
+        try {
+          const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && !entry.name.startsWith('.')) {
+              queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+            }
+          }
+        } catch (_) {}
+      }
+    }));
+  }
+  return results;
+}
+
+// GET /api/index?root=<path> — full recursive index of music root
+app.get('/api/index', async (req, res) => {
+  const root = req.query.root;
+  if (!root) return res.status(400).json({ error: 'root required' });
+
+  if (indexCache.has(root)) return res.json(indexCache.get(root));
+
+  try { await fs.promises.access(root); }
+  catch (_) { return res.status(404).json({ error: 'Directory not found' }); }
+
+  try {
+    const index = await buildMusicIndex(root);
+    indexCache.set(root, index);
+    res.json(index);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Artwork cache (keyed by absolute mp3 path)
+const artworkCache = new Map();
+
+// GET /api/artwork?path=<absolute mp3 path>
+// Returns album art: checks folder for common image files first, then ffmpeg embedded art
+app.get('/api/artwork', async (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath) return res.status(400).end();
+
+  if (artworkCache.has(filePath)) {
+    const cached = artworkCache.get(filePath);
+    if (!cached) return res.status(404).end();
+    res.setHeader('Content-Type', cached.type);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(cached.data);
+  }
+
+  const dir = path.dirname(filePath);
+
+  // 1. Check common cover image filenames in the same folder
+  const candidates = ['cover.jpg','cover.jpeg','cover.png','folder.jpg','folder.jpeg',
+    'folder.png','front.jpg','front.jpeg','artwork.jpg','artwork.jpeg','art.jpg'];
+  for (const name of candidates) {
+    try {
+      const data = await fs.promises.readFile(path.join(dir, name));
+      const type = name.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      artworkCache.set(filePath, { data, type });
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(data);
+    } catch (_) {}
+  }
+
+  // 2. Any jpg/png in the folder
+  try {
+    const entries = await fs.promises.readdir(dir);
+    const img = entries.find((e) => /\.(jpg|jpeg|png)$/i.test(e));
+    if (img) {
+      const data = await fs.promises.readFile(path.join(dir, img));
+      const type = img.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      artworkCache.set(filePath, { data, type });
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(data);
+    }
+  } catch (_) {}
+
+  // 3. Extract embedded art via ffmpeg
+  const { spawn } = require('child_process');
+  const ff = spawn('ffmpeg', [
+    '-i', filePath, '-an', '-vcodec', 'copy', '-f', 'image2', 'pipe:1',
+  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const bufs = [];
+  ff.stdout.on('data', (c) => bufs.push(c));
+  const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
+  if (code === 0 && bufs.length) {
+    const data = Buffer.concat(bufs);
+    artworkCache.set(filePath, { data, type: 'image/jpeg' });
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(data);
+  }
+
+  // 4. MusicBrainz Cover Art Archive fallback — search by folder name
+  try {
+    const folderName = path.basename(dir);
+    // Extract artist and album from typical scene folder name patterns
+    // e.g. "VA_-_Mellomania_Vol.01-2CD-2004-MOD" or "Artist_-_Album-2004"
+    const cleaned = folderName.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+    const mbSearch = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(cleaned)}&limit=1&fmt=json`;
+    const mbRes = await fetch(mbSearch, { headers: { 'User-Agent': 'TracklistPlayer/1.0 (local)' } });
+    if (mbRes.ok) {
+      const mbData = await mbRes.json();
+      const releases = mbData.releases || [];
+      if (releases.length > 0) {
+        const mbid = releases[0].id;
+        const caRes = await fetch(`https://coverartarchive.org/release/${mbid}/front-250`, {
+          redirect: 'follow',
+          headers: { 'User-Agent': 'TracklistPlayer/1.0 (local)' },
+        });
+        if (caRes.ok) {
+          const buf = Buffer.from(await caRes.arrayBuffer());
+          artworkCache.set(filePath, { data: buf, type: 'image/jpeg' });
+          res.setHeader('Content-Type', 'image/jpeg');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          return res.send(buf);
+        }
+      }
+    }
+  } catch (_) {}
+
+  artworkCache.set(filePath, null);
+  res.status(404).end();
 });
 
 // GET /api/reveal?path=<absolute path> — reveal file/folder in Finder (macOS)

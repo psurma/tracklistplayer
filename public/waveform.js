@@ -46,8 +46,9 @@ class WaveformRenderer {
   }
 
   // Called every animation frame by app.js — reads audio time directly for 60 fps scrolling
-  tick(currentTime) {
+  tick(currentTime, liveDuration) {
     this.currentTime = currentTime;
+    if (liveDuration > 0) this.duration = liveDuration;
     if (!this.peaks) return;
     this._renderZoom();
     // Overview is cheaper — only redraw when playhead has moved noticeably
@@ -99,17 +100,23 @@ class WaveformRenderer {
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
   }
 
-  // bass/mid/high are 0-255 → RGB colour similar to DJay's palette
+  // bass/mid/high are 0-255 → HSL colour: warm hues for bass, cool/cyan for treble
   _color(b, m, h) {
-    const r  = Math.min(255, (b * 1.5 + h * 0.4) | 0);
-    const g  = Math.min(255, (m * 1.3 + b * 0.2) | 0);
-    const bl = Math.min(255, (h * 1.6 + m * 0.3) | 0);
-    return `rgb(${r},${g},${bl})`;
+    const peak = Math.max(b, m, h, 1);
+    // warmth: 1 = bass-dominated, 0 = treble-dominated
+    const warmth = (b * 2 + m) / (b * 2 + m + h * 2 + 1);
+    // hue: 0 = red (bass), 200 = cyan (treble)
+    const hue = Math.round((1 - warmth) * 200);
+    const lit = Math.round(15 + (peak / 255) * 45); // 15–60 %
+    return `hsl(${hue},80%,${lit}%)`;
   }
 
   _renderOverview() {
     const { ctx, W, H } = this._setup(this.ov);
-    const { peaks, bass, mids, highs, numBuckets, duration } = this;
+    const { peaks, bass, mids, highs, numBuckets, bucketSecs } = this;
+    // Use the decoded duration (numBuckets * bucketSecs) as the single time reference
+    // so waveform bars, playhead, and track markers all share the same scale.
+    const decodedDuration = numBuckets * bucketSecs;
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0a0a0a';
 
     ctx.fillStyle = bg;
@@ -134,14 +141,14 @@ class WaveformRenderer {
     }
 
     // Played-region darken
-    const px = Math.floor((this.currentTime / duration) * W);
+    const px = Math.floor((this.currentTime / decodedDuration) * W);
     ctx.fillStyle = 'rgba(0,0,0,0.42)';
     ctx.fillRect(0, 0, px, H);
 
     // Track markers
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     for (const t of this.tracks) {
-      const x = Math.round((t.startSeconds / duration) * W);
+      const x = Math.round((t.startSeconds / decodedDuration) * W);
       ctx.fillRect(x, 0, 1, H);
     }
 
@@ -205,10 +212,11 @@ class WaveformRenderer {
 
   _bindEvents() {
     this.ov.addEventListener('click', (e) => {
-      if (!this.duration) return;
+      if (!this.numBuckets) return;
+      const decodedDuration = this.numBuckets * this.bucketSecs;
       const r = this.ov.getBoundingClientRect();
-      this.onSeek(Math.max(0, Math.min(this.duration,
-        ((e.clientX - r.left) / r.width) * this.duration
+      this.onSeek(Math.max(0, Math.min(decodedDuration,
+        ((e.clientX - r.left) / r.width) * decodedDuration
       )));
     });
 

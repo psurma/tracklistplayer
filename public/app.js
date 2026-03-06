@@ -30,6 +30,26 @@ const waveformRenderer = new WaveformRenderer(
   }
 );
 
+let currentArtworkPath = null;
+let currentArtworkUrl  = null;
+function loadArtwork(disc) {
+  if (!disc.mp3Path || disc.mp3Path === currentArtworkPath) return;
+  currentArtworkPath = disc.mp3Path;
+  fetch(`/api/artwork?path=${encodeURIComponent(disc.mp3Path)}`)
+    .then((r) => (r.ok ? r.blob() : null))
+    .then((blob) => {
+      if (currentArtworkUrl) { URL.revokeObjectURL(currentArtworkUrl); currentArtworkUrl = null; }
+      if (!blob) { npSection.classList.remove('has-artwork'); npSection.style.removeProperty('--artwork'); return; }
+      currentArtworkUrl = URL.createObjectURL(blob);
+      npSection.style.setProperty('--artwork', `url("${currentArtworkUrl}")`);
+      npSection.classList.add('has-artwork');
+    })
+    .catch(() => {
+      npSection.classList.remove('has-artwork');
+      npSection.style.removeProperty('--artwork');
+    });
+}
+
 let currentWfPath = null;
 async function loadWaveform(disc) {
   if (!disc.mp3Path || disc.mp3Path === currentWfPath) return;
@@ -38,14 +58,13 @@ async function loadWaveform(disc) {
   wfStatus.classList.remove('hidden');
   waveformRenderer.clear();
   try {
-    const res = await fetch(`/api/waveform?path=${encodeURIComponent(disc.mp3Path)}`);
+    const res = await fetch(`/api/waveform?path=${encodeURIComponent(disc.mp3Path)}&bucketMs=${STORAGE.getSpectrumRes()}`);
     if (!res.ok) throw new Error('waveform failed');
     const data = await res.json();
     const d = state.discs.find((x) => x.id === disc.id);
     waveformRenderer.load(data, d ? d.tracks : []);
     wfStatus.classList.add('hidden');
   } catch (_) {
-    wfSection.classList.add('hidden');
     wfStatus.classList.add('hidden');
     currentWfPath = null;
   }
@@ -76,6 +95,7 @@ const npDisc        = document.getElementById('np-disc');
 const npTrackNumber = document.getElementById('np-track-number');
 const npTitle       = document.getElementById('np-title');
 const npPerformer   = document.getElementById('np-performer');
+const npSection     = document.getElementById('now-playing');
 const spotifyBtn      = document.getElementById('spotify-btn');
 const soundcloudBtn   = document.getElementById('soundcloud-btn');
 const finderBtn       = document.getElementById('finder-btn');
@@ -104,6 +124,20 @@ const STORAGE = {
   setFavs:     (arr) => localStorage.setItem('tlp_favorites', JSON.stringify(arr)),
   getPlayState: ()   => JSON.parse(localStorage.getItem('tlp_playstate') || 'null'),
   setPlayState: (v)  => localStorage.setItem('tlp_playstate', JSON.stringify(v)),
+  getScanDir:   ()    => localStorage.getItem('tlp_scan_dir') || '',
+  setScanDir:   (v)   => localStorage.setItem('tlp_scan_dir', v),
+  getFilter:    ()    => localStorage.getItem('tlp_filter') || '',
+  setFilter:    (v)   => localStorage.setItem('tlp_filter', v),
+  getVolume:    ()    => parseFloat(localStorage.getItem('tlp_volume') ?? '1'),
+  setVolume:    (v)   => localStorage.setItem('tlp_volume', String(v)),
+  getShuffle:   ()    => localStorage.getItem('tlp_shuffle') === 'on',
+  setShuffle:   (v)   => localStorage.setItem('tlp_shuffle', v ? 'on' : 'off'),
+  getRepeat:    ()    => localStorage.getItem('tlp_repeat') || 'off',
+  setRepeat:    (v)   => localStorage.setItem('tlp_repeat', v),
+  getSpectrumRes: ()  => parseInt(localStorage.getItem('tlp_spectrum_res') || '100', 10),
+  setSpectrumRes: (v) => localStorage.setItem('tlp_spectrum_res', String(v)),
+  getTrackLabels: ()  => localStorage.getItem('tlp_track_labels') !== 'off',
+  setTrackLabels: (v) => localStorage.setItem('tlp_track_labels', v ? 'on' : 'off'),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -138,31 +172,50 @@ function favKey(mp3File, trackNumber) {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   if (themeToggle) {
-    themeToggle.textContent = theme === 'dark' ? 'Light' : 'Dark';
+    themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
   }
 }
 
 // ── Favorites ─────────────────────────────────────────────────────────────────
+// state.favorites: Map<key, {mp3Path, mp3File, dir, trackNumber, title, performer, albumTitle, startSeconds}>
 function loadFavorites() {
-  state.favorites = new Set(STORAGE.getFavs());
+  state.favorites = new Map();
+  const saved = STORAGE.getFavs();
+  for (const item of saved) {
+    if (typeof item === 'object' && item.mp3File && item.trackNumber != null) {
+      state.favorites.set(favKey(item.mp3File, item.trackNumber), item);
+    }
+  }
 }
 
 function saveFavorites() {
-  STORAGE.setFavs([...state.favorites]);
+  STORAGE.setFavs([...state.favorites.values()]);
 }
 
-function toggleFavorite(mp3File, trackNumber, starEl) {
-  const key = favKey(mp3File, trackNumber);
+function toggleFavorite(disc, trackIdx, starEl) {
+  const track = disc.tracks[trackIdx];
+  const key = favKey(disc.mp3File, track.track);
   if (state.favorites.has(key)) {
     state.favorites.delete(key);
     starEl.classList.remove('fav-active');
     starEl.title = 'Add to favorites';
   } else {
-    state.favorites.add(key);
+    state.favorites.set(key, {
+      mp3Path: disc.mp3Path,
+      mp3File: disc.mp3File,
+      dir: disc.mp3Path ? disc.mp3Path.slice(0, disc.mp3Path.lastIndexOf('/')) : '',
+      trackNumber: track.track,
+      title: track.title || '',
+      performer: track.performer || disc.albumPerformer || '',
+      albumTitle: disc.albumTitle || '',
+      startSeconds: track.startSeconds,
+    });
     starEl.classList.add('fav-active');
     starEl.title = 'Remove from favorites';
   }
   saveFavorites();
+  const favsPanel = document.getElementById('favs-panel');
+  if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -233,6 +286,7 @@ async function loadFolderBrowser(dir) {
       item.addEventListener('click', () => {
         folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
         item.classList.add('active');
+        STORAGE.setScanDir(fullPath);
         scanDirectory(fullPath);
       });
       item.addEventListener('dblclick', () => {
@@ -389,20 +443,70 @@ function highlightTrackInSidebar(discId, trackIdx) {
 // ── Seek bar track markers ─────────────────────────────────────────────────────
 const seekTicks = document.getElementById('seek-ticks');
 
+function setTrackLabelsVisible(on) {
+  STORAGE.setTrackLabels(on);
+  seekTicks.classList.toggle('no-labels', !on);
+  if (on) updateTickLabelVisibility();
+}
+
 function updateSeekTicks() {
   seekTicks.innerHTML = '';
   const disc = currentDisc();
   if (!disc || !disc.tracks.length || !isFinite(audio.duration)) return;
+  let labelIdx = 0;
   for (const track of disc.tracks) {
     if (track.startSeconds <= 0) continue; // skip track 1 at 0:00
     const pct = (track.startSeconds / audio.duration) * 100;
     const tick = document.createElement('div');
-    tick.className = 'seek-tick';
+    const above = (labelIdx % 2 === 0);
+    tick.className = `seek-tick ${above ? 'seek-tick--above' : 'seek-tick--below'}`;
     tick.style.left = `${pct}%`;
-    tick.title = `${String(track.track).padStart(2, '0')} — ${track.title || ''}`;
+    const num = String(track.track).padStart(2, '0');
+    tick.dataset.startSeconds = track.startSeconds;
+    const bar = document.createElement('div');
+    bar.className = 'seek-tick-bar';
+    tick.appendChild(bar);
+    const label = document.createElement('span');
+    label.className = 'seek-tick-label';
+    label.textContent = `${num} — ${track.title || ''}`;
+    tick.title = label.textContent;
+    tick.appendChild(label);
     seekTicks.appendChild(tick);
+    labelIdx++;
   }
+  updateTickLabelVisibility();
 }
+
+function updateTickLabelVisibility() {
+  if (seekTicks.classList.contains('no-labels')) return;
+  const wrapWidth = seekBar.offsetWidth;
+  if (wrapWidth === 0) return;
+  const MIN_GAP = 72; // px — minimum space between label centres
+  const ticks = Array.from(seekTicks.querySelectorAll('.seek-tick'));
+  let lastX = -MIN_GAP;
+  ticks.forEach((tick) => {
+    const x = (parseFloat(tick.style.left) / 100) * wrapWidth;
+    const label = tick.querySelector('.seek-tick-label');
+    if (!label) return;
+    if (x - lastX >= MIN_GAP) {
+      label.style.display = '';
+      lastX = x;
+    } else {
+      label.style.display = 'none';
+    }
+  });
+}
+
+window.addEventListener('resize', updateTickLabelVisibility);
+
+seekTicks.addEventListener('click', (e) => {
+  const tick = e.target.closest('.seek-tick');
+  if (!tick || tick.dataset.startSeconds == null) return;
+  e.stopPropagation();
+  const t = parseFloat(tick.dataset.startSeconds);
+  audio.currentTime = t;
+  if (audio.paused) audio.play().catch(() => {});
+});
 
 // ── Audio / disc loading ──────────────────────────────────────────────────────
 function loadDisc(disc) {
@@ -414,6 +518,7 @@ function loadDisc(disc) {
   updateNowPlaying(-1);
   highlightTrackInSidebar(disc.id, -1);
   loadWaveform(disc);
+  loadArtwork(disc);
 }
 
 function playDiscAtTrack(disc, trackIdx) {
@@ -432,6 +537,7 @@ function playDiscAtTrack(disc, trackIdx) {
   updateNowPlaying(trackIdx);
   highlightTrackInSidebar(disc.id, trackIdx);
   loadWaveform(disc);
+  loadArtwork(disc);
 
   const startSecs = disc.tracks[trackIdx] ? disc.tracks[trackIdx].startSeconds : 0;
 
@@ -504,7 +610,7 @@ function renderDiscList() {
           <div class="track-title">${escapeHtml(track.title || '(unknown)')}</div>
           ${track.performer ? `<div class="track-performer">${escapeHtml(track.performer)}</div>` : ''}
         </span>
-        <button class="fav-btn${isFav ? ' fav-active' : ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
+        <button class="fav-btn${isFav ? ' fav-active' : ''}" data-key="${escapeHtml(favKey(disc.mp3File, track.track))}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
         <span class="track-time">${formatTime(track.startSeconds)}</span>
       `;
 
@@ -515,7 +621,7 @@ function renderDiscList() {
 
       item.querySelector('.fav-btn').addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleFavorite(disc.mp3File, track.track, e.currentTarget);
+        toggleFavorite(disc, i, e.currentTarget);
       });
 
       section.appendChild(item);
@@ -526,6 +632,243 @@ function renderDiscList() {
 
   applyFilter(filterInput.value);
 }
+
+// ── Search ────────────────────────────────────────────────────────────────────
+const searchPanel  = document.getElementById('search-panel');
+const searchInput  = document.getElementById('search-input');
+const searchCount  = document.getElementById('search-count');
+const searchResults = document.getElementById('search-results');
+const searchBtn    = document.getElementById('search-btn');
+const searchClose  = document.getElementById('search-close');
+
+let musicIndex = null;      // null = not yet loaded
+let indexLoading = false;
+
+function openSearchPanel() {
+  searchPanel.classList.remove('hidden');
+  searchBtn.classList.add('active');
+  searchInput.focus();
+  if (!musicIndex && !indexLoading) fetchMusicIndex();
+}
+
+function closeSearchPanel() {
+  searchPanel.classList.add('hidden');
+  searchBtn.classList.remove('active');
+}
+
+async function fetchMusicIndex() {
+  const root = STORAGE.getDir();
+  if (!root) { searchResults.innerHTML = '<div class="search-empty">Load a directory first.</div>'; return; }
+  indexLoading = true;
+  searchResults.innerHTML = '<div class="search-empty">Building index…</div>';
+  try {
+    const res = await fetch(`/api/index?root=${encodeURIComponent(root)}`);
+    if (!res.ok) throw new Error(res.statusText);
+    musicIndex = await res.json();
+    runSearch(searchInput.value);
+  } catch (e) {
+    searchResults.innerHTML = `<div class="search-empty">Index failed: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    indexLoading = false;
+  }
+}
+
+function highlight(text, words) {
+  if (!words.length) return escapeHtml(text);
+  let out = escapeHtml(text);
+  for (const w of words) {
+    const re = new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    out = out.replace(re, '<mark>$1</mark>');
+  }
+  return out;
+}
+
+function runSearch(query) {
+  if (!musicIndex) return;
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+  if (!words.length) {
+    searchCount.textContent = `${musicIndex.length} albums`;
+    searchResults.innerHTML = '<div class="search-empty">Type to search…</div>';
+    return;
+  }
+
+  // Build groups: disc header → matching tracks
+  const groups = [];
+  for (const disc of musicIndex) {
+    const discText = [disc.albumTitle, disc.albumPerformer, disc.year].join(' ').toLowerCase();
+    const discMatch = words.every((w) => discText.includes(w));
+
+    const matchingTracks = disc.tracks.filter((t) => {
+      const tt = [t.title, t.performer].join(' ').toLowerCase();
+      return words.every((w) => tt.includes(w));
+    });
+
+    if (!discMatch && matchingTracks.length === 0) continue;
+
+    // If disc matched but no specific track matched, show disc as a single result
+    const tracksToShow = matchingTracks.length > 0 ? matchingTracks : (discMatch ? disc.tracks.slice(0, 1) : []);
+    groups.push({ disc, tracksToShow, discMatch, matchingTracks });
+  }
+
+  const totalTracks = groups.reduce((s, g) => s + g.tracksToShow.length, 0);
+  searchCount.textContent = `${totalTracks} result${totalTracks !== 1 ? 's' : ''}`;
+
+  if (groups.length === 0) {
+    searchResults.innerHTML = '<div class="search-empty">No results.</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const { disc, tracksToShow, discMatch } of groups) {
+    const header = document.createElement('div');
+    header.className = 'search-disc-header';
+    header.innerHTML = `<span>${highlight(disc.albumTitle || disc.mp3File || '—', words)}</span>`
+      + `<span style="color:var(--text-dim);font-weight:400">${highlight(disc.albumPerformer || '', words)}</span>`
+      + (disc.year ? `<span class="search-disc-year">${disc.year}</span>` : '');
+    frag.appendChild(header);
+
+    if (disc.tracks.length === 0) {
+      // No CUE — just the raw MP3
+      const row = document.createElement('div');
+      row.className = 'search-result disc-result';
+      row.innerHTML = `<span class="search-result-num">&#9654;</span>`
+        + `<span class="search-result-title">${highlight(disc.mp3File || disc.albumTitle || '—', words)}</span>`;
+      row.addEventListener('click', () => playFromSearch(disc, -1));
+      frag.appendChild(row);
+    } else {
+      for (const track of tracksToShow) {
+        const trackIdx = disc.tracks.indexOf(track);
+        const row = document.createElement('div');
+        row.className = 'search-result';
+        row.innerHTML = `<span class="search-result-num">${String(track.track).padStart(2, '0')}</span>`
+          + `<span class="search-result-title">${highlight(track.title || '—', words)}</span>`
+          + (track.performer ? `<span class="search-result-artist">${highlight(track.performer, words)}</span>` : '');
+        row.addEventListener('click', () => playFromSearch(disc, trackIdx));
+        frag.appendChild(row);
+      }
+    }
+  }
+  searchResults.innerHTML = '';
+  searchResults.appendChild(frag);
+}
+
+async function playFromSearch(indexDisc, trackIdx) {
+  closeSearchPanel();
+  const targetMp3 = indexDisc.mp3Path;
+  await scanDirectory(indexDisc.dir);
+  const disc = state.discs.find((d) => d.mp3Path === targetMp3);
+  if (!disc) return;
+  if (trackIdx >= 0 && disc.tracks.length > trackIdx) {
+    playDiscAtTrack(disc, trackIdx);
+  } else {
+    loadDisc(disc);
+    audio.play().catch(() => {});
+  }
+}
+
+searchBtn.addEventListener('click', () => {
+  if (searchPanel.classList.contains('hidden')) openSearchPanel();
+  else closeSearchPanel();
+});
+searchClose.addEventListener('click', closeSearchPanel);
+searchInput.addEventListener('input', () => runSearch(searchInput.value));
+searchInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSearchPanel(); });
+
+// ── Starred tracks panel ──────────────────────────────────────────────────────
+const favsPanel  = document.getElementById('favs-panel');
+const favsBtn    = document.getElementById('favs-btn');
+const favsClose  = document.getElementById('favs-close');
+const favsList   = document.getElementById('favs-list');
+const favsCount  = document.getElementById('favs-count');
+
+function openFavsPanel() {
+  favsPanel.classList.remove('hidden');
+  favsBtn.classList.add('active');
+  renderFavsList();
+}
+
+function closeFavsPanel() {
+  favsPanel.classList.add('hidden');
+  favsBtn.classList.remove('active');
+}
+
+function renderFavsList() {
+  const items = [...state.favorites.values()];
+  favsCount.textContent = `${items.length} track${items.length !== 1 ? 's' : ''}`;
+
+  if (items.length === 0) {
+    favsList.innerHTML = '<div class="search-empty">No starred tracks yet. Click ★ on any track.</div>';
+    return;
+  }
+
+  items.sort((a, b) =>
+    (a.albumTitle || '').localeCompare(b.albumTitle || '') || a.trackNumber - b.trackNumber
+  );
+
+  const frag = document.createDocumentFragment();
+  let lastAlbum = null;
+  for (const fav of items) {
+    if (fav.albumTitle !== lastAlbum) {
+      lastAlbum = fav.albumTitle;
+      const header = document.createElement('div');
+      header.className = 'search-disc-header';
+      header.innerHTML = `<span>${escapeHtml(fav.albumTitle || fav.mp3File || '—')}</span>`;
+      frag.appendChild(header);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'search-result';
+    row.innerHTML = `<span class="search-result-num">${String(fav.trackNumber).padStart(2, '0')}</span>`
+      + `<span class="search-result-title">${escapeHtml(fav.title || '—')}</span>`
+      + (fav.performer ? `<span class="search-result-artist">${escapeHtml(fav.performer)}</span>` : '')
+      + `<button class="fav-remove" title="Unstar">★</button>`;
+
+    row.addEventListener('click', (e) => {
+      if (e.target.classList.contains('fav-remove')) {
+        const key = favKey(fav.mp3File, fav.trackNumber);
+        state.favorites.delete(key);
+        saveFavorites();
+        // Clear star in sidebar if visible
+        const starBtn = discList.querySelector(`.fav-btn[data-key="${CSS.escape(key)}"]`);
+        if (starBtn) starBtn.classList.remove('fav-active');
+        renderFavsList();
+        return;
+      }
+      playFromFav(fav);
+    });
+    frag.appendChild(row);
+  }
+  favsList.innerHTML = '';
+  favsList.appendChild(frag);
+}
+
+async function playFromFav(fav) {
+  closeFavsPanel();
+  let disc = state.discs.find((d) => d.mp3Path === fav.mp3Path);
+  if (!disc && fav.dir) {
+    await scanDirectory(fav.dir);
+    disc = state.discs.find((d) => d.mp3Path === fav.mp3Path);
+  }
+  if (!disc) return;
+  const trackIdx = disc.tracks.findIndex((t) => t.track === fav.trackNumber);
+  if (trackIdx >= 0) {
+    playDiscAtTrack(disc, trackIdx);
+  } else {
+    loadDisc(disc);
+    audio.addEventListener('canplay', function p() {
+      audio.removeEventListener('canplay', p);
+      audio.currentTime = fav.startSeconds;
+      audio.play().catch(() => {});
+    });
+  }
+}
+
+favsBtn.addEventListener('click', () => {
+  if (favsPanel.classList.contains('hidden')) openFavsPanel();
+  else closeFavsPanel();
+});
+favsClose.addEventListener('click', closeFavsPanel);
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function scanDirectory(dir, autoplay = false) {
@@ -547,8 +890,18 @@ async function scanDirectory(dir, autoplay = false) {
     // Double-click: play first track from scratch
     if (autoplay) {
       const first = state.discs.find((d) => d.mp3Path && d.tracks.length);
-      if (first) playDiscAtTrack(first, 0);
-      else if (state.discs.find((d) => d.mp3Path)) loadDisc(state.discs.find((d) => d.mp3Path));
+      if (first) {
+        playDiscAtTrack(first, 0);
+      } else {
+        const disc = state.discs.find((d) => d.mp3Path);
+        if (disc) {
+          loadDisc(disc);
+          audio.addEventListener('canplay', function p() {
+            audio.removeEventListener('canplay', p);
+            audio.play().catch(() => {});
+          });
+        }
+      }
       showNfo(dir);
       return;
     }
@@ -686,7 +1039,7 @@ volumeBar.addEventListener('input', () => { audio.volume = volumeBar.value; });
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.matches('input, textarea, select, [contenteditable]')) return;
   if (e.key === ' ') { e.preventDefault(); btnPlay.click(); }
   else if (e.key === 'ArrowLeft') { e.preventDefault(); btnPrev.click(); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); btnNext.click(); }
@@ -731,7 +1084,7 @@ timeTotal.addEventListener('click', () => {
 });
 
 // ── Filter ────────────────────────────────────────────────────────────────────
-filterInput.addEventListener('input', () => applyFilter(filterInput.value));
+filterInput.addEventListener('input', () => { applyFilter(filterInput.value); STORAGE.setFilter(filterInput.value); });
 filterInput.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { filterInput.value = ''; applyFilter(''); }
 });
@@ -740,6 +1093,10 @@ filterClear.addEventListener('click', () => { filterInput.value = ''; applyFilte
 // ── Dir load ──────────────────────────────────────────────────────────────────
 function loadRoot(dir) {
   STORAGE.setDir(dir);
+  STORAGE.setScanDir(dir); // reset to root when explicitly loading a new dir
+  STORAGE.setFilter('');
+  filterInput.value = '';
+  musicIndex = null;
   loadFolderBrowser(dir);
   scanDirectory(dir);
 }
@@ -764,11 +1121,102 @@ function setWaveformVisible(on) {
   waveformVisible = on;
   STORAGE.setWaveformOn(on);
   waveformToggle.classList.toggle('off', !on);
-  // Only touch wfSection if a waveform is actually loaded
-  if (currentWfPath) wfSection.classList.toggle('hidden', !on);
+  if (!on) {
+    wfSection.classList.add('hidden');
+    return;
+  }
+  // Turning on: load or re-render for current disc
+  const disc = currentDisc();
+  if (!disc || !disc.mp3Path) return;
+  if (currentWfPath === disc.mp3Path && waveformRenderer.peaks) {
+    // Data already loaded — just show and re-render with correct canvas dims
+    wfSection.classList.remove('hidden');
+    waveformRenderer._invalidateCache();
+    waveformRenderer._renderOverview();
+    waveformRenderer._renderZoom();
+  } else {
+    // Not loaded or failed — force a fresh load
+    currentWfPath = null;
+    loadWaveform(disc);
+  }
 }
 
 waveformToggle.addEventListener('click', () => setWaveformVisible(!waveformVisible));
+
+// ── Settings modal ────────────────────────────────────────────────────────────
+const settingsBtn     = document.getElementById('settings-btn');
+const settingsOverlay = document.getElementById('settings-overlay');
+const settingsClose   = document.getElementById('settings-close');
+const settingsVolume  = document.getElementById('settings-volume');
+const settingsVolVal  = document.getElementById('settings-volume-val');
+
+function openSettings() {
+  // Sync all seg-btn active states
+  syncSettingsBtns('theme',       STORAGE.getTheme());
+  syncSettingsBtns('spectrum',     waveformVisible ? 'on' : 'off');
+  syncSettingsBtns('spectrumRes',  String(STORAGE.getSpectrumRes()));
+  syncSettingsBtns('trackLabels',  STORAGE.getTrackLabels() ? 'on' : 'off');
+  syncSettingsBtns('repeat',       repeatMode);
+  syncSettingsBtns('shuffle',      shuffleOn ? 'on' : 'off');
+  settingsVolume.value = audio.volume;
+  settingsVolVal.textContent = Math.round(audio.volume * 100) + '%';
+  settingsOverlay.classList.remove('hidden');
+}
+
+function closeSettings() {
+  settingsOverlay.classList.add('hidden');
+}
+
+function syncSettingsBtns(setting, value) {
+  settingsOverlay.querySelectorAll(`.seg-btn[data-setting="${setting}"]`).forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.value === value);
+  });
+}
+
+settingsOverlay.addEventListener('click', (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
+settingsClose.addEventListener('click', closeSettings);
+settingsBtn.addEventListener('click', openSettings);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+
+settingsVolume.addEventListener('input', () => {
+  const v = parseFloat(settingsVolume.value);
+  audio.volume = v;
+  volumeBar.value = v;
+  STORAGE.setVolume(v);
+  settingsVolVal.textContent = Math.round(v * 100) + '%';
+});
+
+settingsOverlay.addEventListener('click', (e) => {
+  const btn = e.target.closest('.seg-btn');
+  if (!btn) return;
+  const { setting, value } = btn.dataset;
+  syncSettingsBtns(setting, value);
+  if (setting === 'theme') {
+    applyTheme(value);
+    STORAGE.setTheme(value);
+    waveformRenderer._invalidateCache();
+    if (waveformVisible && currentWfPath) { waveformRenderer._renderOverview(); waveformRenderer._renderZoom(); }
+  } else if (setting === 'spectrum') {
+    setWaveformVisible(value === 'on');
+  } else if (setting === 'spectrumRes') {
+    const ms = parseInt(value, 10);
+    STORAGE.setSpectrumRes(ms);
+    // Invalidate waveform cache so it re-analyses at new resolution
+    currentWfPath = null;
+    const disc = currentDisc();
+    if (disc) loadWaveform(disc);
+  } else if (setting === 'repeat') {
+    while (repeatMode !== value) cycleRepeat();
+    STORAGE.setRepeat(repeatMode);
+  } else if (setting === 'shuffle') {
+    setShuffleOn(value === 'on');
+    STORAGE.setShuffle(shuffleOn);
+  } else if (setting === 'trackLabels') {
+    setTrackLabelsVisible(value === 'on');
+  }
+});
 
 // ── Mini player ───────────────────────────────────────────────────────────────
 let isMini = false;
@@ -914,6 +1362,13 @@ async function init() {
   loadFavorites();
   applyTheme(STORAGE.getTheme());
   setWaveformVisible(STORAGE.getWaveformOn());
+  setTrackLabelsVisible(STORAGE.getTrackLabels());
+  setShuffleOn(STORAGE.getShuffle());
+  const savedRepeat = STORAGE.getRepeat();
+  while (repeatMode !== savedRepeat) cycleRepeat();
+  const savedVol = STORAGE.getVolume();
+  audio.volume = savedVol;
+  volumeBar.value = savedVol;
 
   // Restore sidebar width
   const w = Math.max(200, Math.min(600, parseInt(STORAGE.getSidebarW(), 10)));
@@ -935,17 +1390,34 @@ async function init() {
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
   (function waveformLoop() {
     requestAnimationFrame(waveformLoop);
-    waveformRenderer.tick(audio.currentTime);
+    waveformRenderer.tick(audio.currentTime, isFinite(audio.duration) ? audio.duration : 0);
   }());
 
-  // Restore last dir
+  // Restore last dir + scan position + filter
   try {
     const res = await fetch('/api/config');
     const config = await res.json();
     const dir = config.dir || STORAGE.getDir();
     if (dir) {
+      STORAGE.setDir(dir);
       dirInput.value = dir;
-      loadRoot(dir);
+      musicIndex = null;
+
+      // Restore filter text
+      const savedFilter = STORAGE.getFilter();
+      if (savedFilter) filterInput.value = savedFilter;
+
+      // Load folder browser, then mark active subfolder
+      const scanDir = STORAGE.getScanDir() || dir;
+      await loadFolderBrowser(dir);
+      if (savedFilter) applyFilter(savedFilter);
+      // Highlight the active subfolder item in the browser
+      if (scanDir !== dir) {
+        const activeItem = folderBrowser.querySelector(`.folder-item[data-name="${CSS.escape(scanDir.split('/').pop())}"]`);
+        if (activeItem) activeItem.classList.add('active');
+      }
+
+      await scanDirectory(scanDir);
     }
   } catch (_) {
     const dir = STORAGE.getDir();

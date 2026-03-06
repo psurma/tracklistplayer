@@ -40,8 +40,105 @@
     <!-- Main area -->
     <main id="main">
       <div id="toolbar">
-        <button id="theme-toggle" title="Switch theme">Light</button>
-        <button id="waveform-toggle" title="Toggle spectrum analyzer">Spectrum</button>
+        <a id="spotify-btn" href="#" target="_blank" rel="noopener noreferrer" title="Search Spotify" class="hidden">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+        </a>
+        <a id="soundcloud-btn" href="#" target="_blank" rel="noopener noreferrer" title="Search SoundCloud" class="hidden">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M11.56 8.87V17h8.76c.97 0 1.68-.69 1.68-1.66 0-.91-.69-1.64-1.6-1.67-.07-2.19-1.81-3.95-3.99-3.95-.6 0-1.16.14-1.66.37-.35-1.37-1.6-2.39-3.09-2.39-.06 0-.1.01-.1.01zm-1.04-.28C9.6 7.07 8.1 6 6.38 6 4.08 6 2.2 7.91 2.2 10.24c0 .05 0 .09.01.14C1.08 10.74.3 11.78.3 13c0 1.47 1.18 2.67 2.64 2.67H10.5V8.87c0-.1.01-.19.02-.28z"/></svg>
+        </a>
+        <button id="finder-btn" title="Show in Finder" class="hidden">⌘</button>
+        <button id="nfo-btn" title="Toggle NFO" class="hidden">☰</button>
+        <button id="favs-btn" title="Starred tracks">★</button>
+        <button id="search-btn" title="Search collection">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg>
+        </button>
+        <button id="theme-toggle" title="Switch theme">☀</button>
+        <button id="waveform-toggle" title="Toggle spectrum">≋</button>
+        <button id="settings-btn" title="Settings">⚙</button>
+      </div>
+
+      <!-- Settings modal -->
+      <div id="settings-overlay" class="hidden">
+        <div id="settings-modal">
+          <div id="settings-header">
+            <span>Settings</span>
+            <button id="settings-close" title="Close">&#x2715;</button>
+          </div>
+          <div id="settings-body">
+            <div class="settings-section">
+              <div class="settings-label">Theme</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="theme" data-value="dark">Dark</button>
+                <button class="seg-btn" data-setting="theme" data-value="light">Light</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Spectrum Analyser</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="spectrum" data-value="on">On</button>
+                <button class="seg-btn" data-setting="spectrum" data-value="off">Off</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Spectrum Resolution</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="spectrumRes" data-value="25">Detailed</button>
+                <button class="seg-btn" data-setting="spectrumRes" data-value="50">Normal</button>
+                <button class="seg-btn" data-setting="spectrumRes" data-value="100">Fast</button>
+              </div>
+              <div class="settings-hint">Detailed = smaller buckets, more CPU during analysis</div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Default Volume</div>
+              <div class="settings-row settings-row-slider">
+                <input type="range" id="settings-volume" min="0" max="1" step="0.01" />
+                <span id="settings-volume-val"></span>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Repeat</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="repeat" data-value="off">Off</button>
+                <button class="seg-btn" data-setting="repeat" data-value="all">All</button>
+                <button class="seg-btn" data-setting="repeat" data-value="one">One</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Shuffle</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="shuffle" data-value="off">Off</button>
+                <button class="seg-btn" data-setting="shuffle" data-value="on">On</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-label">Scrubber Track Labels</div>
+              <div class="settings-row">
+                <button class="seg-btn" data-setting="trackLabels" data-value="on">On</button>
+                <button class="seg-btn" data-setting="trackLabels" data-value="off">Off</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Starred tracks panel -->
+      <div id="favs-panel" class="hidden">
+        <div id="favs-bar">
+          <span id="favs-title">Starred Tracks</span>
+          <span id="favs-count"></span>
+          <button id="favs-close" title="Close">&#x2715;</button>
+        </div>
+        <div id="favs-list"></div>
+      </div>
+
+      <!-- Search panel -->
+      <div id="search-panel" class="hidden">
+        <div id="search-bar">
+          <input type="text" id="search-input" placeholder="Artist, title, year..." autocomplete="off" spellcheck="false" />
+          <span id="search-count"></span>
+          <button id="search-close" title="Close search">&#x2715;</button>
+        </div>
+        <div id="search-results"></div>
       </div>
 
       <!-- Top section (resizable) -->
@@ -50,16 +147,12 @@
       <!-- Now playing -->
       <div id="now-playing">
         <div id="np-label">NOW PLAYING</div>
-        <div id="np-disc">—</div>
-        <div id="np-track-number"></div>
+        <div id="np-disc-row">
+          <span id="np-track-number"></span>
+          <span id="np-disc">—</span>
+        </div>
         <div id="np-title">Load a directory to begin</div>
         <div id="np-performer"></div>
-        <div id="np-actions">
-          <a id="spotify-btn" href="#" target="_blank" rel="noopener noreferrer" class="hidden">Search Spotify</a>
-          <a id="soundcloud-btn" href="#" target="_blank" rel="noopener noreferrer" class="hidden">Search SoundCloud</a>
-          <button id="finder-btn" class="hidden">Show in Finder</button>
-          <button id="nfo-btn" class="hidden">NFO</button>
-        </div>
       </div>
 
       <!-- Waveform -->
