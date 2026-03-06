@@ -167,30 +167,36 @@ function toggleFavorite(mp3File, trackNumber, starEl) {
 
 // ── Filter ────────────────────────────────────────────────────────────────────
 function applyFilter(query) {
-  const q = query.trim().toLowerCase();
-  filterClear.classList.toggle('hidden', !q);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  filterClear.classList.toggle('hidden', words.length === 0);
 
-  // Filter and highlight folder browser items
   folderBrowser.querySelectorAll('.folder-item').forEach((item) => {
     const name = item.dataset.name || '';
     const nameLower = name.toLowerCase();
-    const matches = !q || nameLower.includes(q);
+    const matches = words.length === 0 || words.every((w) => nameLower.includes(w));
     item.classList.toggle('filter-hidden', !matches);
 
     const label = item.querySelector('.folder-label');
     if (!label) return;
 
-    if (q && matches) {
-      const idx = nameLower.indexOf(q);
-      label.innerHTML =
-        escapeHtml(name.slice(0, idx)) +
-        `<mark>${escapeHtml(name.slice(idx, idx + q.length))}</mark>` +
-        escapeHtml(name.slice(idx + q.length));
+    if (words.length && matches) {
+      // Highlight each word; build a regex that matches any of them
+      const pattern = new RegExp(
+        words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+        'gi'
+      );
+      label.innerHTML = escapeHtml(name).replace(
+        // Run the regex on the escaped string so tags don't break
+        new RegExp(
+          words.map((w) => escapeHtml(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+          'gi'
+        ),
+        (m) => `<mark>${m}</mark>`
+      );
     } else {
       label.textContent = name;
     }
   });
-
 }
 
 // ── Folder browser ────────────────────────────────────────────────────────────
