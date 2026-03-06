@@ -317,6 +317,15 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 #theme-toggle:hover { background: var(--highlight); color: var(--text); }
 
+#waveform-toggle {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-dim);
+  cursor: pointer; font-family: inherit; font-size: 11px;
+  padding: 5px 10px; transition: background 0.15s, color 0.15s;
+}
+#waveform-toggle:hover { background: var(--highlight); color: var(--text); }
+#waveform-toggle.off { color: var(--text-muted); }
+
 /* ── Mini player ────────────────────────────── */
 #mini-btn {
   background: var(--bg3); border: 1px solid var(--border);

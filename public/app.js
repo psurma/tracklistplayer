@@ -34,7 +34,7 @@ let currentWfPath = null;
 async function loadWaveform(disc) {
   if (!disc.mp3Path || disc.mp3Path === currentWfPath) return;
   currentWfPath = disc.mp3Path;
-  wfSection.classList.remove('hidden');
+  if (waveformVisible) wfSection.classList.remove('hidden');
   wfStatus.classList.remove('hidden');
   waveformRenderer.clear();
   try {
@@ -78,7 +78,8 @@ const spotifyBtn      = document.getElementById('spotify-btn');
 const soundcloudBtn   = document.getElementById('soundcloud-btn');
 const finderBtn       = document.getElementById('finder-btn');
 const nfoBtn        = document.getElementById('nfo-btn');
-const themeToggle   = document.getElementById('theme-toggle');
+const themeToggle      = document.getElementById('theme-toggle');
+const waveformToggle   = document.getElementById('waveform-toggle');
 const miniBtn       = document.getElementById('mini-btn');
 const miniTrack     = document.getElementById('mini-track');
 const miniSub       = document.getElementById('mini-sub');
@@ -91,7 +92,9 @@ const STORAGE = {
   setTheme:    (v)   => localStorage.setItem('tlp_theme', v),
   getSidebarW: ()    => localStorage.getItem('tlp_sidebar_w') || '340',
   setSidebarW: (v)   => localStorage.setItem('tlp_sidebar_w', String(v)),
-  getBrowserH: ()    => localStorage.getItem('tlp_browser_h') || '40',
+  getBrowserH:    ()    => localStorage.getItem('tlp_browser_h') || '40',
+  getWaveformOn:  ()    => localStorage.getItem('tlp_waveform') !== 'off',
+  setWaveformOn:  (v)   => localStorage.setItem('tlp_waveform', v ? 'on' : 'off'),
   setBrowserH: (v)   => localStorage.setItem('tlp_browser_h', String(v)),
   getFavs:     ()    => JSON.parse(localStorage.getItem('tlp_favorites') || '[]'),
   setFavs:     (arr) => localStorage.setItem('tlp_favorites', JSON.stringify(arr)),
@@ -661,6 +664,19 @@ if (themeToggle) {
   });
 }
 
+// ── Waveform visibility ───────────────────────────────────────────────────────
+let waveformVisible = true;
+
+function setWaveformVisible(on) {
+  waveformVisible = on;
+  STORAGE.setWaveformOn(on);
+  waveformToggle.classList.toggle('off', !on);
+  // Only touch wfSection if a waveform is actually loaded
+  if (currentWfPath) wfSection.classList.toggle('hidden', !on);
+}
+
+waveformToggle.addEventListener('click', () => setWaveformVisible(!waveformVisible));
+
 // ── Mini player ───────────────────────────────────────────────────────────────
 let isMini = false;
 
@@ -771,6 +787,7 @@ function initPanelResize() {
 async function init() {
   loadFavorites();
   applyTheme(STORAGE.getTheme());
+  setWaveformVisible(STORAGE.getWaveformOn());
 
   // Restore sidebar width
   const w = Math.max(200, Math.min(600, parseInt(STORAGE.getSidebarW(), 10)));
