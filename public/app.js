@@ -753,6 +753,7 @@ if (themeToggle) {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     applyTheme(next);
     STORAGE.setTheme(next);
+    waveformRenderer._invalidateCache();
   });
 }
 

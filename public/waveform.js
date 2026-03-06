@@ -110,8 +110,9 @@ class WaveformRenderer {
   _renderOverview() {
     const { ctx, W, H } = this._setup(this.ov);
     const { peaks, bass, mids, highs, numBuckets, duration } = this;
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0a0a0a';
 
-    ctx.fillStyle = '#0a0a0a';
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
     const bpp = numBuckets / W; // buckets per pixel
@@ -154,7 +155,8 @@ class WaveformRenderer {
     const { peaks, bass, mids, highs, numBuckets, bucketSecs, duration } = this;
     const ct = this.currentTime;
 
-    ctx.fillStyle = '#0a0a0a';
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0a0a0a';
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
     const ZOOM = 30; // seconds visible
