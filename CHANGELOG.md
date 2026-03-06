@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-03-06
+
+### Added
+- Mini player button (⊖ in toolbar): collapses window to 80 px showing only controls + seek bar + current track info; floats on top; ⊞ restores full view
+
+### Fixed
+- Waveform scroll choppiness: replaced timeupdate-driven updates (4 fps) with a dedicated 60 fps requestAnimationFrame loop reading audio.currentTime directly
+- Canvas dimensions now cached between frames (no per-frame getBoundingClientRect)
+- Overview redraws only when playhead moves >1 s; zoom canvas redraws every frame for smooth scrolling
+
 ## [1.2.0] - 2026-03-06
 
 ### Added

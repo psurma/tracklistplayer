@@ -41,6 +41,7 @@
     <main id="main">
       <div id="toolbar">
         <button id="theme-toggle" title="Switch theme">Light</button>
+        <button id="mini-btn" title="Mini player">&#x2296;</button>
       </div>
 
       <!-- Now playing -->
@@ -80,6 +81,12 @@
   <!-- Full-width player controls footer -->
   <footer id="player">
     <audio id="audio"></audio>
+
+    <!-- Shown only in mini-player mode -->
+    <div id="mini-info">
+      <div id="mini-track">—</div>
+      <div id="mini-sub"></div>
+    </div>
 
     <div id="controls">
       <button id="btn-prev" title="Previous track">&#9664;&#9664;</button>

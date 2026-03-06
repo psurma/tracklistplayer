@@ -57,6 +57,7 @@ function createWindow() {
     backgroundColor: '#111114',
     show: false,
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
     },
@@ -139,4 +140,27 @@ app.on('will-quit', () => {
 
 ipcMain.handle('reveal-in-finder', (_event, filePath) => {
   shell.showItemInFolder(filePath);
+});
+
+// Mini player: shrink window to 80 px tall, always-on-top; restore on exit
+let preMiniState = null;
+
+ipcMain.handle('set-mini-player', (_event, mini) => {
+  if (!mainWindow) return;
+  if (mini) {
+    preMiniState = mainWindow.getBounds();
+    const { x, y, width } = preMiniState;
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.setResizable(false);
+    mainWindow.setMinimumSize(400, 80);
+    mainWindow.setBounds({ x, y, width: Math.max(width, 500), height: 80 });
+  } else {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setResizable(true);
+    if (preMiniState) {
+      mainWindow.setMinimumSize(600, 400);
+      mainWindow.setBounds(preMiniState);
+      preMiniState = null;
+    }
+  }
 });

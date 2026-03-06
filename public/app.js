@@ -79,6 +79,9 @@ const soundcloudBtn   = document.getElementById('soundcloud-btn');
 const finderBtn       = document.getElementById('finder-btn');
 const nfoBtn        = document.getElementById('nfo-btn');
 const themeToggle   = document.getElementById('theme-toggle');
+const miniBtn       = document.getElementById('mini-btn');
+const miniTrack     = document.getElementById('mini-track');
+const miniSub       = document.getElementById('mini-sub');
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE = {
@@ -347,6 +350,8 @@ function updateNowPlaying(trackIdx) {
   } else {
     finderBtn.classList.add('hidden');
   }
+
+  if (isMini) updateMiniInfo();
 }
 
 function highlightTrackInSidebar(discId, trackIdx) {
@@ -532,7 +537,6 @@ audio.addEventListener('timeupdate', () => {
   const dur = audio.duration;
   timeCurrent.textContent = formatTime(ct);
   if (isFinite(dur)) { timeTotal.textContent = formatTime(dur); seekBar.value = (ct / dur) * 100; }
-  waveformRenderer.update(ct);
   const newIdx = detectCurrentTrack(ct);
   if (newIdx !== state.currentTrackIndex) {
     state.currentTrackIndex = newIdx;
@@ -601,7 +605,6 @@ seekBar.addEventListener('input', () => {
   if (isFinite(audio.duration)) {
     const t = (seekBar.value / 100) * audio.duration;
     timeCurrent.textContent = formatTime(t);
-    waveformRenderer.update(t);
   }
 });
 
@@ -645,6 +648,27 @@ if (themeToggle) {
     STORAGE.setTheme(next);
   });
 }
+
+// ── Mini player ───────────────────────────────────────────────────────────────
+let isMini = false;
+
+function updateMiniInfo() {
+  const disc  = currentDisc();
+  const track = disc && state.currentTrackIndex >= 0 ? disc.tracks[state.currentTrackIndex] : null;
+  miniTrack.textContent = track ? (track.title || '—') : (disc ? (disc.albumTitle || '—') : '—');
+  miniSub.textContent   = track ? (track.performer || disc.albumPerformer || '') : (disc ? (disc.albumPerformer || '') : '');
+}
+
+function setMiniPlayer(mini) {
+  isMini = mini;
+  document.body.classList.toggle('mini', mini);
+  miniBtn.title     = mini ? 'Full player' : 'Mini player';
+  miniBtn.innerHTML = mini ? '&#x229E;' : '&#x2296;'; // ⊞ restore / ⊖ mini
+  if (mini) updateMiniInfo();
+  if (window.electronAPI) window.electronAPI.setMiniPlayer(mini);
+}
+
+miniBtn.addEventListener('click', () => setMiniPlayer(!isMini));
 
 // ── Sidebar collapse ──────────────────────────────────────────────────────────
 function setSidebarCollapsed(collapsed) {
@@ -751,6 +775,12 @@ async function init() {
   setSidebarCollapsed(false);
   initSidebarResize();
   initPanelResize();
+
+  // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
+  (function waveformLoop() {
+    requestAnimationFrame(waveformLoop);
+    waveformRenderer.tick(audio.currentTime);
+  }());
 
   // Restore last dir
   try {

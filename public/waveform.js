@@ -40,44 +40,57 @@ class WaveformRenderer {
     this.bucketSecs = apiData.bucketSecs;
     this.duration   = apiData.duration;
     this.tracks     = tracks || [];
-    this._schedule();
+    this._ovTime    = -999; // force full overview redraw on first tick
+    this._invalidateCache();
+    this._renderOverview();
   }
 
-  update(currentTime) {
+  // Called every animation frame by app.js — reads audio time directly for 60 fps scrolling
+  tick(currentTime) {
     this.currentTime = currentTime;
-    this._schedule();
+    if (!this.peaks) return;
+    this._renderZoom();
+    // Overview is cheaper — only redraw when playhead has moved noticeably
+    if (Math.abs(currentTime - this._ovTime) > 1) {
+      this._ovTime = currentTime;
+      this._renderOverview();
+    }
   }
 
   clear() {
     this.peaks = null;
+    this._ovTime = -999;
     this._clearCanvas(this.ov);
     this._clearCanvas(this.zm);
   }
 
   // ── Private ─────────────────────────────────────────────────────────────────
 
-  _schedule() {
-    if (this._raf) return;
-    this._raf = requestAnimationFrame(() => {
-      this._raf = null;
-      if (this.peaks) { this._renderOverview(); this._renderZoom(); }
-    });
-  }
-
+  // Cache canvas physical size; only recalculate on resize
   _setup(canvas) {
-    const dpr  = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const W    = Math.round(rect.width);
-    const H    = Math.round(rect.height);
-    const pw   = Math.round(W * dpr);
-    const ph   = Math.round(H * dpr);
-    if (canvas.width !== pw || canvas.height !== ph) {
-      canvas.width  = pw;
-      canvas.height = ph;
+    const dpr = window.devicePixelRatio || 1;
+    if (!canvas._wfCache) canvas._wfCache = {};
+    const cache = canvas._wfCache;
+    if (!cache.valid) {
+      const rect  = canvas.getBoundingClientRect();
+      const W     = Math.round(rect.width);
+      const H     = Math.round(rect.height);
+      const pw    = Math.round(W * dpr);
+      const ph    = Math.round(H * dpr);
+      if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width  = pw;
+        canvas.height = ph;
+      }
+      cache.W = W; cache.H = H; cache.valid = true;
     }
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { ctx, W, H };
+    return { ctx, W: cache.W, H: cache.H };
+  }
+
+  _invalidateCache() {
+    if (this.ov._wfCache) this.ov._wfCache.valid = false;
+    if (this.zm._wfCache) this.zm._wfCache.valid = false;
   }
 
   _clearCanvas(canvas) {
@@ -206,7 +219,10 @@ class WaveformRenderer {
     });
 
     // Re-render when the container resizes
-    const ro = new ResizeObserver(() => this._schedule());
+    const ro = new ResizeObserver(() => {
+      this._invalidateCache();
+      if (this.peaks) { this._renderOverview(); this._renderZoom(); }
+    });
     ro.observe(this.ov.parentElement);
   }
 }

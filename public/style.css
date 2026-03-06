@@ -316,6 +316,41 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 #theme-toggle:hover { background: var(--highlight); color: var(--text); }
 
+/* ── Mini player ────────────────────────────── */
+#mini-btn {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-dim);
+  cursor: pointer; font-family: inherit; font-size: 14px;
+  padding: 5px 8px; transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+#mini-btn:hover { background: var(--highlight); color: var(--text); }
+
+#mini-info {
+  display: none;
+  flex-direction: column; justify-content: center;
+  min-width: 0; flex: 0 0 180px;
+  gap: 2px; overflow: hidden;
+}
+#mini-track {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#mini-sub {
+  font-size: 10px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Mini mode: hide everything except the footer player */
+body.mini #app              { display: none; }
+body.mini #mini-info        { display: flex; }
+body.mini #player           { -webkit-app-region: drag; }
+body.mini #mini-info,
+body.mini #controls,
+body.mini #seek-row,
+body.mini #volume-row,
+body.mini #mini-btn         { -webkit-app-region: no-drag; }
+
 /* ── Now playing ────────────────────────────── */
 #now-playing {
   flex-shrink: 0;
