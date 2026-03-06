@@ -218,8 +218,10 @@ async function loadFolderBrowser(dir) {
       item.innerHTML = `<span class="folder-label">${escapeHtml(name)}</span>`;
       const fullPath = `${dir}/${name}`;
       item.addEventListener('click', () => {
-        // Load tracks from this folder in the bottom panel only
         scanDirectory(fullPath);
+      });
+      item.addEventListener('dblclick', () => {
+        scanDirectory(fullPath, true);
       });
       folderBrowser.appendChild(item);
     }
@@ -485,7 +487,7 @@ function renderDiscList() {
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
-async function scanDirectory(dir) {
+async function scanDirectory(dir, autoplay = false) {
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
   currentWfPath = null;
   waveformRenderer.clear();
@@ -500,6 +502,15 @@ async function scanDirectory(dir) {
     const data = await res.json();
     state.discs = data.discs;
     renderDiscList();
+
+    // Double-click: play first track from scratch
+    if (autoplay) {
+      const first = state.discs.find((d) => d.mp3Path && d.tracks.length);
+      if (first) playDiscAtTrack(first, 0);
+      else if (state.discs.find((d) => d.mp3Path)) loadDisc(state.discs.find((d) => d.mp3Path));
+      showNfo(dir);
+      return;
+    }
 
     // Restore saved playback position if it matches a disc in this scan
     const saved = STORAGE.getPlayState();
