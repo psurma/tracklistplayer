@@ -25,6 +25,7 @@ const waveformRenderer = new WaveformRenderer(
   (t) => {
     if (!isFinite(audio.duration)) return;
     audio.currentTime = t;
+    waveformRenderer.seekTo(t);
     seekBar.value = (t / audio.duration) * 100;
     timeCurrent.textContent = formatTime(t);
   }
@@ -39,14 +40,25 @@ function loadArtwork(disc) {
     .then((r) => (r.ok ? r.blob() : null))
     .then((blob) => {
       if (currentArtworkUrl) { URL.revokeObjectURL(currentArtworkUrl); currentArtworkUrl = null; }
-      if (!blob) { npSection.classList.remove('has-artwork'); npSection.style.removeProperty('--artwork'); return; }
+      if (!blob) {
+        npSection.classList.remove('has-artwork');
+        npSection.style.removeProperty('--artwork');
+        artworkImg.src = '';
+        artworkPane.classList.add('hidden');
+        return;
+      }
       currentArtworkUrl = URL.createObjectURL(blob);
       npSection.style.setProperty('--artwork', `url("${currentArtworkUrl}")`);
       npSection.classList.add('has-artwork');
+      artworkImg.src = currentArtworkUrl;
+      // Show artwork pane only when NFO is not open
+      if (nfoPane.classList.contains('hidden')) artworkPane.classList.remove('hidden');
     })
     .catch(() => {
       npSection.classList.remove('has-artwork');
       npSection.style.removeProperty('--artwork');
+      artworkImg.src = '';
+      artworkPane.classList.add('hidden');
     });
 }
 
@@ -96,8 +108,9 @@ const npTrackNumber = document.getElementById('np-track-number');
 const npTitle       = document.getElementById('np-title');
 const npPerformer   = document.getElementById('np-performer');
 const npSection     = document.getElementById('now-playing');
-const spotifyBtn      = document.getElementById('spotify-btn');
-const soundcloudBtn   = document.getElementById('soundcloud-btn');
+const spotifyBtn       = document.getElementById('spotify-btn');
+const spotifySearchBtn = document.getElementById('spotify-search-btn');
+const soundcloudBtn    = document.getElementById('soundcloud-btn');
 const finderBtn       = document.getElementById('finder-btn');
 const nfoBtn        = document.getElementById('nfo-btn');
 const themeToggle      = document.getElementById('theme-toggle');
@@ -253,6 +266,65 @@ function applyFilter(query) {
 }
 
 // ── Folder browser ────────────────────────────────────────────────────────────
+const SORT_KEY = 'tlp_folder_sort';
+let folderSort = localStorage.getItem(SORT_KEY) || 'name'; // 'name' | 'date'
+let lastSubdirs = []; // cache for re-sorting without re-fetching
+let lastBrowseDir = '';
+
+const sortToggle = document.getElementById('sort-toggle');
+function applySortLabel() {
+  sortToggle.textContent = folderSort === 'name' ? 'A–Z' : 'Date';
+  sortToggle.title = folderSort === 'name' ? 'Sorted A–Z (click for date)' : 'Sorted by date (click for A–Z)';
+}
+applySortLabel();
+
+sortToggle.addEventListener('click', () => {
+  folderSort = folderSort === 'name' ? 'date' : 'name';
+  localStorage.setItem(SORT_KEY, folderSort);
+  applySortLabel();
+  if (lastBrowseDir) renderFolderItems(lastBrowseDir, lastSubdirs);
+});
+
+function normEntry(e) { return typeof e === 'string' ? { name: e, mtime: 0 } : e; }
+function sortedSubdirs(subdirs) {
+  const copy = subdirs.map(normEntry);
+  if (folderSort === 'date') {
+    copy.sort((a, b) => b.mtime - a.mtime); // newest first
+  } else {
+    copy.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+  }
+  return copy;
+}
+
+function renderFolderItems(dir, subdirs) {
+  // Preserve up-row if present
+  const upRow = folderBrowser.querySelector('.folder-up');
+  const activeNames = new Set(
+    [...folderBrowser.querySelectorAll('.folder-item.active')].map((el) => el.dataset.name)
+  );
+  // Remove all folder items
+  folderBrowser.querySelectorAll('.folder-item').forEach((el) => el.remove());
+
+  for (const entry of sortedSubdirs(subdirs)) {
+    const item = document.createElement('div');
+    item.className = 'folder-item';
+    item.dataset.name = entry.name;
+    if (activeNames.has(entry.name)) item.classList.add('active');
+    item.innerHTML = `<span class="folder-label">${escapeHtml(entry.name)}</span>`;
+    const fullPath = `${dir}/${entry.name}`;
+    item.addEventListener('click', () => {
+      folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
+      item.classList.add('active');
+      STORAGE.setScanDir(fullPath);
+      scanDirectory(fullPath);
+    });
+    item.addEventListener('dblclick', () => { scanDirectory(fullPath, true); });
+    folderBrowser.appendChild(item);
+  }
+
+  applyFilter(filterInput.value);
+}
+
 async function loadFolderBrowser(dir) {
   state.browseDir = dir;
   folderBrowser.innerHTML = '<div class="status-msg">Loading...</div>';
@@ -261,10 +333,11 @@ async function loadFolderBrowser(dir) {
     const res = await fetch(`/api/ls?dir=${encodeURIComponent(dir)}`);
     if (!res.ok) throw new Error('Failed to list directory');
     const data = await res.json();
+    lastBrowseDir = dir;
+    lastSubdirs = data.subdirs || [];
 
     folderBrowser.innerHTML = '';
 
-    // Up row
     if (data.parent) {
       const up = document.createElement('div');
       up.className = 'folder-up';
@@ -273,45 +346,49 @@ async function loadFolderBrowser(dir) {
       folderBrowser.appendChild(up);
     }
 
-    if (!data.subdirs.length && !data.parent) {
+    if (!lastSubdirs.length && !data.parent) {
       folderBrowser.innerHTML = '<div class="status-msg">No subfolders.</div>';
+      return;
     }
 
-    for (const name of data.subdirs) {
-      const item = document.createElement('div');
-      item.className = 'folder-item';
-      item.dataset.name = name;
-      item.innerHTML = `<span class="folder-label">${escapeHtml(name)}</span>`;
-      const fullPath = `${dir}/${name}`;
-      item.addEventListener('click', () => {
-        folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
-        item.classList.add('active');
-        STORAGE.setScanDir(fullPath);
-        scanDirectory(fullPath);
-      });
-      item.addEventListener('dblclick', () => {
-        scanDirectory(fullPath, true);
-      });
-      folderBrowser.appendChild(item);
-    }
-
-    applyFilter(filterInput.value);
+    renderFolderItems(dir, lastSubdirs);
   } catch (err) {
     folderBrowser.innerHTML = `<div class="status-msg" style="color:#c06060">${escapeHtml(err.message)}</div>`;
   }
 }
 
-// ── NFO pane ──────────────────────────────────────────────────────────────────
-const nfoPane       = document.getElementById('nfo-pane');
-const mainResizeH   = document.getElementById('main-resize-h');
-const mainTop       = document.getElementById('main-top');
+// ── NFO / Tracklist pane ──────────────────────────────────────────────────────
+const nfoPane         = document.getElementById('nfo-pane');
+const mainResizeH     = document.getElementById('main-resize-h');
+const mainTop         = document.getElementById('main-top');
+const artworkPane     = document.getElementById('artwork-pane');
+const artworkImg      = document.getElementById('artwork-img');
+const nfoTabNfo       = document.getElementById('nfo-tab-nfo');
+const nfoTabTracklist = document.getElementById('nfo-tab-tracklist');
+const tracklistContent = document.getElementById('tracklist-content');
+
+let activeInfoTab = 'nfo'; // 'nfo' | 'tracklist'
+
+function switchInfoTab(tab) {
+  activeInfoTab = tab;
+  document.querySelectorAll('.nfo-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  nfoTabNfo.classList.toggle('hidden', tab !== 'nfo');
+  nfoTabTracklist.classList.toggle('hidden', tab !== 'tracklist');
+}
+
+document.getElementById('nfo-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.nfo-tab');
+  if (btn) switchInfoTab(btn.dataset.tab);
+});
 
 function setNfoPaneVisible(visible) {
   nfoPane.classList.toggle('hidden', !visible);
-  mainResizeH.classList.toggle('hidden', !visible);
+  // Show artwork in the NFO slot when NFO is closed (if artwork is loaded)
+  artworkPane.classList.toggle('hidden', visible || !currentArtworkUrl);
 }
 const nfoContent   = document.getElementById('nfo-content');
-const nfoPaneName  = document.getElementById('nfo-pane-name');
 const nfoPaneClose = document.getElementById('nfo-pane-close');
 
 let lastNfoDir = '';
@@ -341,20 +418,67 @@ function highlightNfo() {
   if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
+function formatTimeShort(s) {
+  if (!isFinite(s) || s < 0) return '';
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+function renderTracklist(disc) {
+  if (!disc || !disc.tracks || disc.tracks.length === 0) {
+    tracklistContent.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--text-muted)">No tracks</div>';
+    return;
+  }
+  tracklistContent.innerHTML = disc.tracks.map((t, i) => `
+    <div class="tl-track${i === state.currentTrackIndex ? ' active' : ''}" data-idx="${i}">
+      <span class="tl-num">${String(t.track || i + 1).padStart(2, '0')}</span>
+      <span class="tl-title">${escapeHtml(t.title || '')}</span>
+      ${t.performer ? `<span class="tl-performer">${escapeHtml(t.performer)}</span>` : ''}
+      <span class="tl-time">${formatTimeShort(t.startSeconds)}</span>
+    </div>`).join('');
+}
+
+function highlightTracklist() {
+  document.querySelectorAll('.tl-track').forEach((row) => {
+    const active = parseInt(row.dataset.idx, 10) === state.currentTrackIndex;
+    row.classList.toggle('active', active);
+    if (active) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+}
+
+tracklistContent.addEventListener('click', (e) => {
+  const row = e.target.closest('.tl-track');
+  if (!row) return;
+  const disc = currentDisc();
+  if (!disc) return;
+  const idx = parseInt(row.dataset.idx, 10);
+  playDiscAtTrack(disc, idx);
+});
+
 async function showNfo(dir) {
   try {
     const res = await fetch(`/api/nfo?dir=${encodeURIComponent(dir)}`);
     if (!res.ok) {
-      nfoPane.classList.add('hidden');
-      nfoBtn.classList.add('hidden');
+      // No NFO — show tracklist tab only if we have tracks; hide NFO tab
+      const disc = currentDisc();
+      if (disc && disc.tracks && disc.tracks.length > 0) {
+        renderTracklist(disc);
+        setNfoPaneVisible(true);
+        switchInfoTab('tracklist');
+        nfoBtn.classList.add('hidden');
+      } else {
+        nfoPane.classList.add('hidden');
+        nfoBtn.classList.add('hidden');
+      }
       return;
     }
     const text = await res.text();
     lastNfoDir = dir;
     lastNfoText = text;
-    nfoPaneName.textContent = dir.split('/').pop();
     highlightNfo();
+    const disc = currentDisc();
+    if (disc) renderTracklist(disc);
     setNfoPaneVisible(true);
+    switchInfoTab('nfo');
     nfoBtn.classList.add('hidden'); // hide toggle while pane is open
   } catch (_) {
     setNfoPaneVisible(false);
@@ -364,7 +488,7 @@ async function showNfo(dir) {
 
 nfoPaneClose.addEventListener('click', () => {
   setNfoPaneVisible(false);
-  if (lastNfoDir) nfoBtn.classList.remove('hidden');
+  if (lastNfoDir || currentDisc()) nfoBtn.classList.remove('hidden');
 });
 
 nfoBtn.addEventListener('click', () => {
@@ -397,8 +521,9 @@ function updateNowPlaying(trackIdx) {
     npDisc.textContent = disc.albumTitle || disc.mp3File || '—';
     npTrackNumber.textContent = '';
     npTitle.textContent = disc.albumTitle || '—';
+    npTitle.classList.remove('is-fav');
     npPerformer.textContent = disc.albumPerformer || '';
-    spotifyBtn.classList.add('hidden');
+    spotifySearchBtn.classList.add('hidden');
     soundcloudBtn.classList.add('hidden');
     finderBtn.classList.toggle('hidden', !disc.mp3Path);
     if (disc.mp3Path) finderBtn.dataset.path = disc.mp3Path;
@@ -409,16 +534,17 @@ function updateNowPlaying(trackIdx) {
   npDisc.textContent = disc.albumTitle || disc.mp3File || '—';
   npTrackNumber.textContent = String(track.track).padStart(2, '0');
   npTitle.textContent = track.title || '(unknown title)';
+  npTitle.classList.toggle('is-fav', state.favorites.has(favKey(disc.mp3File, track.track)));
   npPerformer.textContent = track.performer || disc.albumPerformer || '';
 
   const query = [track.performer || disc.albumPerformer, track.title].filter(Boolean).join(' ');
   if (query) {
-    spotifyBtn.href = `https://open.spotify.com/search/${encodeURIComponent(query)}`;
-    spotifyBtn.classList.remove('hidden');
+    spotifySearchBtn.href = `https://open.spotify.com/search/${encodeURIComponent(query)}`;
+    spotifySearchBtn.classList.remove('hidden');
     soundcloudBtn.href = `https://soundcloud.com/search?q=${encodeURIComponent(query)}`;
     soundcloudBtn.classList.remove('hidden');
   } else {
-    spotifyBtn.classList.add('hidden');
+    spotifySearchBtn.classList.add('hidden');
     soundcloudBtn.classList.add('hidden');
   }
 
@@ -505,6 +631,7 @@ seekTicks.addEventListener('click', (e) => {
   e.stopPropagation();
   const t = parseFloat(tick.dataset.startSeconds);
   audio.currentTime = t;
+  waveformRenderer.seekTo(t);
   if (audio.paused) audio.play().catch(() => {});
 });
 
@@ -543,6 +670,7 @@ function playDiscAtTrack(disc, trackIdx) {
 
   function seekAndPlay() {
     audio.currentTime = startSecs;
+    waveformRenderer.seekTo(startSecs);
     audio.play().catch(() => {});
     updateSeekTicks();
     audio.removeEventListener('loadedmetadata', seekAndPlay);
@@ -870,6 +998,274 @@ favsBtn.addEventListener('click', () => {
 });
 favsClose.addEventListener('click', closeFavsPanel);
 
+// ── Spotify ───────────────────────────────────────────────────────────────────
+let spotifyPlayer = null;
+let spotifyDeviceId = null;
+let spotifyConnected = false;
+let spotifyAccessToken = null;
+let spotifyTokenExpiry = 0;
+let spotifyPollTimer = null;
+let likedSongsOffset = 0;
+let likedSongsTotal = 0;
+let likedSongsLoading = false;
+
+const spotifyPanel      = document.getElementById('panel-spotify');
+const spotifyConnectPrompt = document.getElementById('spotify-connect-prompt');
+const spotifyLikedList  = document.getElementById('spotify-liked-list');
+const spotifyCount      = document.getElementById('spotify-count');
+const spotifyClose      = document.getElementById('spotify-close');
+const spotifyConnectBtnPanel = document.getElementById('spotify-connect-btn-panel');
+
+async function getSpotifyToken() {
+  if (spotifyAccessToken && Date.now() < spotifyTokenExpiry - 60000) return spotifyAccessToken;
+  const res = await fetch('/api/spotify/refresh');
+  if (!res.ok) throw new Error('Token refresh failed');
+  const data = await res.json();
+  spotifyAccessToken = data.access_token;
+  spotifyTokenExpiry = data.expires_at || (Date.now() + 3600000);
+  return spotifyAccessToken;
+}
+
+function initSpotifySDK(token) {
+  if (spotifyPlayer) { spotifyPlayer.disconnect(); spotifyPlayer = null; }
+  spotifyAccessToken = token;
+  spotifyPlayer = new Spotify.Player({
+    name: 'Tracklist Player',
+    getOAuthToken: (cb) => {
+      getSpotifyToken().then(cb).catch(() => cb(token));
+    },
+    volume: 0.8,
+  });
+  spotifyPlayer.addListener('ready', ({ device_id }) => {
+    spotifyDeviceId = device_id;
+  });
+  spotifyPlayer.addListener('player_state_changed', (playerState) => {
+    if (!playerState) return;
+    // Update now-playing if a Spotify track is active
+    const item = playerState.track_window && playerState.track_window.current_track;
+    if (item) {
+      const isPaused = playerState.paused;
+      // Mark which spotify track item is active
+      spotifyLikedList.querySelectorAll('.spotify-track-item').forEach((el) => {
+        el.classList.toggle('spotify-track-active', el.dataset.uri === item.uri);
+      });
+      if (!isPaused) {
+        btnPlay.innerHTML = '&#9646;&#9646;';
+      } else {
+        btnPlay.innerHTML = '&#9654;';
+      }
+    }
+  });
+  spotifyPlayer.addListener('initialization_error', ({ message }) => {
+    console.error('Spotify init error:', message);
+  });
+  spotifyPlayer.addListener('authentication_error', ({ message }) => {
+    console.error('Spotify auth error:', message);
+  });
+  spotifyPlayer.addListener('account_error', ({ message }) => {
+    console.error('Spotify account error (Premium required):', message);
+  });
+  spotifyPlayer.connect();
+}
+
+function updateSpotifyUI() {
+  if (spotifyConnected) {
+    spotifyConnectPrompt.classList.add('hidden');
+    spotifyLikedList.classList.remove('hidden');
+  } else {
+    spotifyConnectPrompt.classList.remove('hidden');
+    spotifyLikedList.classList.add('hidden');
+  }
+  // Update settings disconnect row
+  const disconnectRow = document.getElementById('spotify-disconnect-row');
+  if (disconnectRow) disconnectRow.classList.toggle('hidden', !spotifyConnected);
+}
+
+async function initSpotify() {
+  try {
+    const statusRes = await fetch('/api/spotify/status');
+    if (!statusRes.ok) return;
+    const status = await statusRes.json();
+    spotifyConnected = status.connected;
+    updateSpotifyUI();
+    if (status.connected) {
+      try {
+        const token = await getSpotifyToken();
+        if (typeof Spotify !== 'undefined') {
+          initSpotifySDK(token);
+        } else {
+          window.onSpotifyWebPlaybackSDKReady = () => initSpotifySDK(token);
+        }
+      } catch (_) {}
+    } else {
+      // Set up SDK callback for when auth completes later
+      if (typeof Spotify === 'undefined') {
+        window.onSpotifyWebPlaybackSDKReady = () => {};
+      }
+    }
+  } catch (_) {}
+}
+
+function openSpotifyPanel() {
+  spotifyPanel.classList.remove('hidden');
+  spotifyBtn.classList.add('active');
+  if (spotifyConnected && likedSongsOffset === 0) loadLikedSongs(0);
+}
+
+function closeSpotifyPanel() {
+  spotifyPanel.classList.add('hidden');
+  spotifyBtn.classList.remove('active');
+}
+
+async function connectSpotify() {
+  const urlRes = await fetch('/api/spotify/auth-url');
+  if (!urlRes.ok) {
+    alert('Please configure your Spotify Client ID and Secret in Settings first.');
+    return;
+  }
+  const { url } = await urlRes.json();
+  window.open(url, '_blank', 'width=500,height=700,noopener');
+
+  // Poll for connection (every 2s, up to 60s)
+  if (spotifyPollTimer) clearInterval(spotifyPollTimer);
+  let attempts = 0;
+  spotifyPollTimer = setInterval(async () => {
+    attempts++;
+    if (attempts > 30) { clearInterval(spotifyPollTimer); spotifyPollTimer = null; return; }
+    try {
+      const statusRes = await fetch('/api/spotify/status');
+      if (!statusRes.ok) return;
+      const status = await statusRes.json();
+      if (status.connected) {
+        clearInterval(spotifyPollTimer);
+        spotifyPollTimer = null;
+        spotifyConnected = true;
+        updateSpotifyUI();
+        try {
+          const token = await getSpotifyToken();
+          if (typeof Spotify !== 'undefined') initSpotifySDK(token);
+          else window.onSpotifyWebPlaybackSDKReady = () => initSpotifySDK(token);
+        } catch (_) {}
+        if (!spotifyPanel.classList.contains('hidden')) loadLikedSongs(0);
+      }
+    } catch (_) {}
+  }, 2000);
+}
+
+async function loadLikedSongs(offset) {
+  if (likedSongsLoading) return;
+  likedSongsLoading = true;
+  if (offset === 0) {
+    spotifyLikedList.innerHTML = '<div class="spotify-loading">Loading liked songs...</div>';
+    likedSongsOffset = 0;
+    likedSongsTotal = 0;
+  }
+  try {
+    const res = await fetch(`/api/spotify/liked?offset=${offset}&limit=50`);
+    if (!res.ok) throw new Error('Failed to load liked songs');
+    const data = await res.json();
+    likedSongsTotal = data.total || 0;
+    likedSongsOffset = offset + (data.items || []).length;
+
+    if (offset === 0) spotifyLikedList.innerHTML = '';
+    spotifyCount.textContent = likedSongsTotal ? `${likedSongsTotal} tracks` : '';
+
+    const frag = document.createDocumentFragment();
+    for (const { track } of (data.items || [])) {
+      if (!track) continue;
+      const item = document.createElement('div');
+      item.className = 'spotify-track-item';
+      item.dataset.uri = track.uri;
+      const duration = formatTime(Math.floor((track.duration_ms || 0) / 1000));
+      const artists = (track.artists || []).map((a) => a.name).join(', ');
+      item.innerHTML = `
+        <span class="spotify-play-icon">&#9654;</span>
+        <span class="spotify-track-info">
+          <div class="spotify-track-title">${escapeHtml(track.name || '')}</div>
+          <div class="spotify-track-artist">${escapeHtml(artists)}</div>
+        </span>
+        <span class="spotify-track-album">${escapeHtml((track.album && track.album.name) || '')}</span>
+        <span class="spotify-track-duration">${duration}</span>
+      `;
+      item.addEventListener('click', () => playSpotifyTrack(track.uri));
+      frag.appendChild(item);
+    }
+    spotifyLikedList.appendChild(frag);
+
+    if (likedSongsOffset < likedSongsTotal) {
+      const loadMore = document.createElement('div');
+      loadMore.className = 'spotify-load-more';
+      loadMore.textContent = `Load more (${likedSongsOffset} of ${likedSongsTotal})`;
+      loadMore.addEventListener('click', () => { loadMore.remove(); loadLikedSongs(likedSongsOffset); });
+      spotifyLikedList.appendChild(loadMore);
+    }
+  } catch (err) {
+    if (offset === 0) {
+      spotifyLikedList.innerHTML = `<div class="spotify-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
+    }
+  } finally {
+    likedSongsLoading = false;
+  }
+}
+
+async function playSpotifyTrack(uri) {
+  let deviceId = spotifyDeviceId;
+
+  // Web Playback SDK not ready — find an active Spotify Connect device instead
+  if (!deviceId) {
+    try {
+      const res = await fetch('/api/spotify/devices');
+      if (res.ok) {
+        const data = await res.json();
+        const devices = data.devices || [];
+        const pick = devices.find((d) => d.is_active) || devices[0];
+        if (pick) deviceId = pick.id;
+      }
+    } catch (_) {}
+  }
+
+  // No device at all — open track in Spotify app/browser as last resort
+  if (!deviceId) {
+    const trackId = uri.split(':').pop();
+    window.open(`https://open.spotify.com/track/${trackId}`);
+    return;
+  }
+
+  try {
+    const token = await getSpotifyToken();
+    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uris: [uri] }),
+    });
+    if (!audio.paused) audio.pause();
+  } catch (err) {
+    console.error('Spotify play error:', err);
+  }
+}
+
+async function disconnectSpotify() {
+  await fetch('/api/spotify/disconnect').catch(() => {});
+  spotifyConnected = false;
+  spotifyAccessToken = null;
+  spotifyTokenExpiry = 0;
+  likedSongsOffset = 0;
+  likedSongsTotal = 0;
+  if (spotifyPlayer) { spotifyPlayer.disconnect(); spotifyPlayer = null; }
+  spotifyDeviceId = null;
+  spotifyLikedList.innerHTML = '';
+  spotifyCount.textContent = '';
+  updateSpotifyUI();
+}
+
+spotifyBtn.addEventListener('click', () => {
+  if (spotifyPanel.classList.contains('hidden')) openSpotifyPanel();
+  else closeSpotifyPanel();
+});
+
+spotifyClose.addEventListener('click', closeSpotifyPanel);
+spotifyConnectBtnPanel.addEventListener('click', connectSpotify);
+
 // ── API ───────────────────────────────────────────────────────────────────────
 async function scanDirectory(dir, autoplay = false) {
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
@@ -920,6 +1316,8 @@ async function scanDirectory(dir, autoplay = false) {
         audio.currentTime = saved.position || 0;
         audio.removeEventListener('loadedmetadata', restorePos);
       });
+      loadWaveform(savedDisc);
+      loadArtwork(savedDisc);
     } else {
       const first = state.discs.find((d) => d.mp3Path);
       if (first && !currentDisc()) loadDisc(first);
@@ -949,7 +1347,7 @@ audio.addEventListener('timeupdate', () => {
     state.currentTrackIndex = newIdx;
     updateNowPlaying(newIdx);
     highlightTrackInSidebar(state.currentDiscId, newIdx);
-    if (!nfoPane.classList.contains('hidden')) highlightNfo();
+    if (!nfoPane.classList.contains('hidden')) { highlightNfo(); highlightTracklist(); }
   }
   // Save play state every ~10 s
   if (!savePlayStateTimer) {
@@ -1010,7 +1408,7 @@ btnPrev.addEventListener('click', () => {
   if (!disc) return;
   const idx = state.currentTrackIndex;
   if (idx > 0 && audio.currentTime - disc.tracks[idx].startSeconds < 3) playDiscAtTrack(disc, idx - 1);
-  else if (idx >= 0) audio.currentTime = disc.tracks[idx].startSeconds;
+  else if (idx >= 0) { const t = disc.tracks[idx].startSeconds; audio.currentTime = t; waveformRenderer.seekTo(t); }
 });
 
 btnNext.addEventListener('click', () => {
@@ -1027,6 +1425,8 @@ seekBar.addEventListener('input', () => {
   if (isFinite(audio.duration)) {
     const t = (seekBar.value / 100) * audio.duration;
     timeCurrent.textContent = formatTime(t);
+    audio.currentTime = t;
+    waveformRenderer.seekTo(t);
   }
 });
 
@@ -1041,8 +1441,8 @@ volumeBar.addEventListener('input', () => { audio.volume = volumeBar.value; });
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select, [contenteditable]')) return;
   if (e.key === ' ') { e.preventDefault(); btnPlay.click(); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); btnPrev.click(); }
-  else if (e.key === 'ArrowRight') { e.preventDefault(); btnNext.click(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); btnNext.click(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); btnPrev.click(); }
 });
 
 // ── Shuffle & repeat ──────────────────────────────────────────────────────────
@@ -1104,6 +1504,117 @@ function loadRoot(dir) {
 dirLoadBtn.addEventListener('click', () => { const d = dirInput.value.trim(); if (d) loadRoot(d); });
 dirInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const d = dirInput.value.trim(); if (d) loadRoot(d); } });
 
+// ── Directory browser modal ───────────────────────────────────────────────────
+const dirModal        = document.getElementById('dir-modal-overlay');
+const dirModalEntries = document.getElementById('dir-modal-entries');
+const dirFavList      = document.getElementById('dir-fav-list');
+const dirModalFavsSection = document.getElementById('dir-modal-favourites');
+const dirModalCwd     = document.getElementById('dir-modal-cwd');
+const dirModalSelected = document.getElementById('dir-modal-selected');
+const dirBrowseBtn    = document.getElementById('dir-browse-btn');
+
+let dirModalPath = '';  // currently selected path
+
+const DIR_FAVS_KEY = 'tlp_dir_favs';
+function getDirFavs() { try { return JSON.parse(localStorage.getItem(DIR_FAVS_KEY) || '[]'); } catch(_) { return []; } }
+function saveDirFavs(favs) { localStorage.setItem(DIR_FAVS_KEY, JSON.stringify(favs)); }
+
+function renderDirFavs() {
+  const favs = getDirFavs();
+  dirModalFavsSection.classList.toggle('hidden', favs.length === 0);
+  dirFavList.innerHTML = favs.map((f, i) => `
+    <div class="dir-fav-item${f === dirModalPath ? ' selected' : ''}" data-path="${escapeHtml(f)}" data-idx="${i}">
+      <span class="dir-entry-icon">&#9733;</span>
+      <span>${escapeHtml(f.split('/').pop() || f)}</span>
+      <button class="dir-fav-remove" data-idx="${i}" title="Remove">&#x2715;</button>
+    </div>`).join('');
+}
+
+async function browseDir(dir) {
+  dirModalCwd.textContent = dir;
+  try {
+    const res = await fetch(`/api/ls?dir=${encodeURIComponent(dir)}`);
+    if (!res.ok) throw new Error('ls failed');
+    const { parent, subdirs } = await res.json();
+    let html = '';
+    if (parent) html += `<div class="dir-entry dir-entry-up" data-path="${escapeHtml(parent)}"><span class="dir-entry-icon">&#x2191;</span> ..</div>`;
+    const sorted = (subdirs || []).map(normEntry).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    html += sorted.map((d) => {
+      const p = `${dir}/${d.name}`;
+      return `<div class="dir-entry${p === dirModalPath ? ' selected' : ''}" data-path="${escapeHtml(p)}"><span class="dir-entry-icon">&#128193;</span>${escapeHtml(d.name)}</div>`;
+    }).join('');
+    dirModalEntries.innerHTML = html || '<div style="padding:8px 16px;font-size:12px;color:var(--text-muted)">No subfolders</div>';
+  } catch (_) {
+    dirModalEntries.innerHTML = '<div style="padding:8px 16px;font-size:12px;color:var(--text-muted)">Cannot read directory</div>';
+  }
+  renderDirFavs();
+}
+
+function selectDirPath(p) {
+  dirModalPath = p;
+  dirModalSelected.textContent = p;
+  // Re-highlight entries
+  dirModalEntries.querySelectorAll('.dir-entry').forEach((el) => el.classList.toggle('selected', el.dataset.path === p));
+  dirFavList.querySelectorAll('.dir-fav-item').forEach((el) => el.classList.toggle('selected', el.dataset.path === p));
+}
+
+async function openDirModal(startDir) {
+  const dir = startDir || dirInput.value.trim() || (getDirFavs()[0] || '/');
+  dirModalPath = dir;
+  dirModalSelected.textContent = dir;
+  dirModal.classList.remove('hidden');
+  await browseDir(dir);
+}
+
+dirModal.addEventListener('click', async (e) => {
+  // Click on directory entry → navigate into it and select it
+  const entry = e.target.closest('.dir-entry');
+  if (entry) { selectDirPath(entry.dataset.path); await browseDir(entry.dataset.path); return; }
+  // Click on favourite → select it (don't navigate)
+  const fav = e.target.closest('.dir-fav-item');
+  if (fav && !e.target.closest('.dir-fav-remove')) { selectDirPath(fav.dataset.path); await browseDir(fav.dataset.path); return; }
+  // Remove favourite
+  const rm = e.target.closest('.dir-fav-remove');
+  if (rm) {
+    const favs = getDirFavs();
+    favs.splice(parseInt(rm.dataset.idx, 10), 1);
+    saveDirFavs(favs);
+    renderDirFavs();
+    return;
+  }
+  // Click overlay backdrop → close
+  if (e.target === dirModal) dirModal.classList.add('hidden');
+});
+
+document.getElementById('dir-modal-close').addEventListener('click', () => dirModal.classList.add('hidden'));
+
+document.getElementById('dir-modal-add-fav').addEventListener('click', () => {
+  if (!dirModalPath) return;
+  const favs = getDirFavs();
+  if (!favs.includes(dirModalPath)) { favs.push(dirModalPath); saveDirFavs(favs); }
+  renderDirFavs();
+});
+
+document.getElementById('dir-modal-go').addEventListener('click', () => {
+  if (!dirModalPath) return;
+  dirModal.classList.add('hidden');
+  dirInput.value = dirModalPath;
+  loadRoot(dirModalPath);
+});
+
+dirBrowseBtn.addEventListener('click', async () => {
+  // In Electron, use native folder picker; otherwise open the web modal
+  if (window.electronAPI && window.electronAPI.pickDirectory) {
+    const picked = await window.electronAPI.pickDirectory();
+    if (picked) { dirInput.value = picked; loadRoot(picked); }
+  } else {
+    openDirModal();
+  }
+});
+
+// Also open modal on double-click of the dir input (as convenience)
+dirInput.addEventListener('dblclick', () => openDirModal());
+
 // ── Theme ─────────────────────────────────────────────────────────────────────
 if (themeToggle) {
   themeToggle.addEventListener('click', () => {
@@ -1123,8 +1634,13 @@ function setWaveformVisible(on) {
   waveformToggle.classList.toggle('off', !on);
   if (!on) {
     wfSection.classList.add('hidden');
+    // Let main-top shrink to now-playing only so the info pane fills the gap
+    mainTop.style.height = '';
     return;
   }
+  // Restore saved height when turning back on
+  const saved = STORAGE.getMainTopH();
+  if (saved) mainTop.style.height = `${saved}px`;
   // Turning on: load or re-render for current disc
   const disc = currentDisc();
   if (!disc || !disc.mp3Path) return;
@@ -1143,6 +1659,49 @@ function setWaveformVisible(on) {
 
 waveformToggle.addEventListener('click', () => setWaveformVisible(!waveformVisible));
 
+// ── Sync test track ───────────────────────────────────────────────────────────
+document.getElementById('sync-test-btn').addEventListener('click', async (e) => {
+  e.currentTarget.blur(); // return focus to document so space bar works
+  const url = '/api/sync-test';
+  audio.src = url;
+  audio.load();
+
+  // Build fake disc with one track per second (0–119)
+  const fakeTracks = Array.from({ length: 120 }, (_, i) => ({
+    track: i + 1,
+    title: `Second ${i + 1}`,
+    startSeconds: i,
+    performer: '',
+  }));
+
+  // Fetch waveform for the WAV via the waveform API (pass the URL as path)
+  // The WAV is served from memory so use the server-side endpoint
+  wfSection.classList.remove('hidden');
+  wfStatus.classList.remove('hidden');
+  waveformRenderer.clear();
+
+  try {
+    const res = await fetch(`/api/sync-test-waveform?bucketMs=${STORAGE.getSpectrumRes()}`);
+    if (res.ok) {
+      const data = await res.json();
+      waveformRenderer.load(data, fakeTracks);
+      wfStatus.classList.add('hidden');
+    }
+  } catch (_) {
+    wfStatus.classList.add('hidden');
+  }
+
+  // Update now-playing header
+  document.getElementById('np-disc').textContent = 'Sync Test Track';
+  document.getElementById('np-title').textContent = 'Beep every second (1 kHz marker + pitch tone)';
+  document.getElementById('np-performer').textContent = '';
+
+  audio.addEventListener('canplay', function onCanPlay() {
+    audio.removeEventListener('canplay', onCanPlay);
+    audio.play().catch(() => {});
+  });
+});
+
 // ── Settings modal ────────────────────────────────────────────────────────────
 const settingsBtn     = document.getElementById('settings-btn');
 const settingsOverlay = document.getElementById('settings-overlay');
@@ -1160,6 +1719,15 @@ function openSettings() {
   syncSettingsBtns('shuffle',      shuffleOn ? 'on' : 'off');
   settingsVolume.value = audio.volume;
   settingsVolVal.textContent = Math.round(audio.volume * 100) + '%';
+  // Populate Spotify credential fields
+  fetch('/api/spotify/config').then((r) => r.json()).then((cfg) => {
+    const cidInput = document.getElementById('spotify-client-id-input');
+    if (cidInput) cidInput.value = cfg.client_id || '';
+    const statusEl = document.getElementById('spotify-settings-status');
+    if (statusEl) statusEl.textContent = cfg.connected ? 'Status: Connected' : '';
+    const disconnectRow = document.getElementById('spotify-disconnect-row');
+    if (disconnectRow) disconnectRow.classList.toggle('hidden', !cfg.connected);
+  }).catch(() => {});
   settingsOverlay.classList.remove('hidden');
 }
 
@@ -1217,6 +1785,54 @@ settingsOverlay.addEventListener('click', (e) => {
     setTrackLabelsVisible(value === 'on');
   }
 });
+
+// ── Spotify settings handlers ─────────────────────────────────────────────────
+const spotifySaveCredsBtn      = document.getElementById('spotify-save-creds-btn');
+const spotifyConnectSettingsBtn = document.getElementById('spotify-connect-settings-btn');
+const spotifyDisconnectBtn      = document.getElementById('spotify-disconnect-btn');
+
+if (spotifySaveCredsBtn) {
+  spotifySaveCredsBtn.addEventListener('click', async () => {
+    const clientId     = (document.getElementById('spotify-client-id-input') || {}).value || '';
+    const clientSecret = (document.getElementById('spotify-client-secret-input') || {}).value || '';
+    const statusEl = document.getElementById('spotify-settings-status');
+    if (!clientId || !clientSecret) {
+      if (statusEl) statusEl.textContent = 'Both Client ID and Client Secret are required.';
+      return;
+    }
+    try {
+      const res = await fetch('/api/spotify/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+      });
+      if (res.ok) {
+        if (statusEl) statusEl.textContent = 'Credentials saved.';
+      } else {
+        if (statusEl) statusEl.textContent = 'Save failed.';
+      }
+    } catch (_) {
+      if (statusEl) { const el = statusEl; el.textContent = 'Save failed.'; }
+    }
+  });
+}
+
+if (spotifyConnectSettingsBtn) {
+  spotifyConnectSettingsBtn.addEventListener('click', async () => {
+    closeSettings();
+    await connectSpotify();
+  });
+}
+
+if (spotifyDisconnectBtn) {
+  spotifyDisconnectBtn.addEventListener('click', async () => {
+    await disconnectSpotify();
+    const statusEl = document.getElementById('spotify-settings-status');
+    if (statusEl) statusEl.textContent = 'Disconnected.';
+    const disconnectRow = document.getElementById('spotify-disconnect-row');
+    if (disconnectRow) disconnectRow.classList.add('hidden');
+  });
+}
 
 // ── Mini player ───────────────────────────────────────────────────────────────
 let isMini = false;
@@ -1357,6 +1973,89 @@ function initMainResize() {
   });
 }
 
+// ── Now-playing pane resize (between art and spectrum) ────────────────────────
+function initNowPlayingResize() {
+  const npPane  = document.getElementById('now-playing');
+  const handle  = document.getElementById('np-resize-h');
+  const saved   = parseInt(localStorage.getItem('tlp_np_h'), 10);
+  if (saved) npPane.style.height = `${saved}px`;
+
+  let startY = 0, startH = 0;
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = npPane.offsetHeight;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!handle.classList.contains('dragging')) return;
+    const newH = Math.max(60, Math.min(500, startH + e.clientY - startY));
+    npPane.style.height = `${newH}px`;
+    localStorage.setItem('tlp_np_h', newH);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!handle.classList.contains('dragging')) return;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  });
+}
+
+// ── Waveform graph resize ─────────────────────────────────────────────────────
+function initWaveformResize() {
+  const ovWrap      = document.getElementById('wf-overview-wrap');
+  const zmWrap      = document.getElementById('wf-zoom-wrap');
+  const midHandle   = document.getElementById('wf-resize-mid');
+  const botHandle   = document.getElementById('wf-resize-bot');
+
+  // Restore persisted heights
+  const savedOvH = parseInt(localStorage.getItem('tlp_wf_ov_h'), 10) || 50;
+  const savedZmH = parseInt(localStorage.getItem('tlp_wf_zm_h'), 10) || 110;
+  ovWrap.style.height = `${savedOvH}px`;
+  zmWrap.style.height = `${savedZmH}px`;
+
+  let dragging = null, startY = 0, startH = 0;
+
+  function beginDrag(handle, wrap, e) {
+    e.preventDefault();
+    dragging = { handle, wrap };
+    startY = e.clientY;
+    startH = wrap.offsetHeight;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  }
+
+  midHandle.addEventListener('mousedown', (e) => beginDrag(midHandle, ovWrap, e));
+  botHandle.addEventListener('mousedown', (e) => beginDrag(botHandle, zmWrap, e));
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const min = dragging.wrap === ovWrap ? 16 : 30;
+    const max = dragging.wrap === ovWrap ? 200 : 400;
+    const newH = Math.max(min, Math.min(max, startH + e.clientY - startY));
+    dragging.wrap.style.height = `${newH}px`;
+    const key = dragging.wrap === ovWrap ? 'tlp_wf_ov_h' : 'tlp_wf_zm_h';
+    localStorage.setItem(key, newH);
+    waveformRenderer._invalidateCache();
+    if (dragging.wrap === ovWrap) waveformRenderer._renderOverview();
+    else waveformRenderer._renderZoom();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging.handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    dragging = null;
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   loadFavorites();
@@ -1386,12 +2085,17 @@ async function init() {
   initSidebarResize();
   initPanelResize();
   initMainResize();
+  initNowPlayingResize();
+  initWaveformResize();
 
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
   (function waveformLoop() {
     requestAnimationFrame(waveformLoop);
-    waveformRenderer.tick(audio.currentTime, isFinite(audio.duration) ? audio.duration : 0);
+    waveformRenderer.tick(audio.currentTime);
   }());
+
+  // Init Spotify integration
+  initSpotify().catch(() => {});
 
   // Restore last dir + scan position + filter
   try {

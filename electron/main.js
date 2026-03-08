@@ -142,6 +142,15 @@ ipcMain.handle('reveal-in-finder', (_event, filePath) => {
   shell.showItemInFolder(filePath);
 });
 
+ipcMain.handle('pick-directory', async () => {
+  const { dialog } = require('electron');
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select music folder',
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 // Mini player: shrink window to 80 px tall, always-on-top; restore on exit
 let preMiniState = null;
 

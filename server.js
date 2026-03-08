@@ -4,13 +4,219 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
 
 const app = express();
 const PORT = 3123;
 
 app.use(cors());
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Spotify OAuth helpers ─────────────────────────────────────────────────────
+const SPOTIFY_CONFIG_PATH = path.join(os.homedir(), '.tracklistplayer', 'spotify.json');
+const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:3123/auth/spotify/callback';
+const SPOTIFY_SCOPES = 'user-library-read streaming user-read-playback-state user-modify-playback-state user-read-email user-read-private';
+
+function serverEscapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function readSpotifyConfig() {
+  try {
+    const data = await fs.promises.readFile(SPOTIFY_CONFIG_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch (_) {
+    return {};
+  }
+}
+
+async function writeSpotifyConfig(data) {
+  const dir = path.dirname(SPOTIFY_CONFIG_PATH);
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(SPOTIFY_CONFIG_PATH, JSON.stringify(data, null, 2));
+}
+
+async function refreshSpotifyToken(config) {
+  const params = new URLSearchParams();
+  params.set('grant_type', 'refresh_token');
+  params.set('refresh_token', config.refresh_token);
+  const credentials = Buffer.from(`${config.client_id}:${config.client_secret}`).toString('base64');
+  const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  if (!tokenRes.ok) throw new Error('Refresh failed');
+  const tokenData = await tokenRes.json();
+  const updated = { ...config, access_token: tokenData.access_token, expires_at: Date.now() + tokenData.expires_in * 1000 };
+  if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
+  await writeSpotifyConfig(updated);
+  return updated;
+}
+
+// GET /api/spotify/config — return client_id and auth status
+app.get('/api/spotify/config', async (req, res) => {
+  const config = await readSpotifyConfig();
+  res.json({
+    client_id: config.client_id || '',
+    connected: !!(config.access_token && config.refresh_token),
+  });
+});
+
+// POST /api/spotify/credentials — save client_id + client_secret
+app.post('/api/spotify/credentials', async (req, res) => {
+  const { client_id, client_secret } = req.body || {};
+  if (!client_id || !client_secret) return res.status(400).json({ error: 'client_id and client_secret required' });
+  const existing = await readSpotifyConfig();
+  await writeSpotifyConfig({ ...existing, client_id, client_secret });
+  res.json({ ok: true });
+});
+
+// GET /api/spotify/auth-url — generate Spotify authorize URL
+app.get('/api/spotify/auth-url', async (req, res) => {
+  const config = await readSpotifyConfig();
+  if (!config.client_id) return res.status(400).json({ error: 'No client_id configured' });
+  const state = Math.random().toString(36).slice(2);
+  const url = `https://accounts.spotify.com/authorize?response_type=code`
+    + `&client_id=${encodeURIComponent(config.client_id)}`
+    + `&scope=${encodeURIComponent(SPOTIFY_SCOPES)}`
+    + `&redirect_uri=${encodeURIComponent(SPOTIFY_REDIRECT_URI)}`
+    + `&state=${state}`;
+  res.json({ url });
+});
+
+// GET /auth/spotify/callback — receive OAuth code, exchange for tokens
+app.get('/auth/spotify/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.send(`<!DOCTYPE html><html><head><title>Spotify Auth</title></head><body style="font-family:sans-serif;background:#191414;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div><h2 style="color:#e05050">Auth failed</h2><p>${serverEscapeHtml(String(error))}</p></div></body></html>`);
+  if (!code) return res.status(400).send('No code');
+
+  const config = await readSpotifyConfig();
+  if (!config.client_id || !config.client_secret) return res.status(400).send('Spotify credentials not configured');
+
+  try {
+    const params = new URLSearchParams();
+    params.set('grant_type', 'authorization_code');
+    params.set('code', code);
+    params.set('redirect_uri', SPOTIFY_REDIRECT_URI);
+    const credentials = Buffer.from(`${config.client_id}:${config.client_secret}`).toString('base64');
+    const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Authorization': `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    if (!tokenRes.ok) {
+      const err = await tokenRes.text();
+      return res.send(`<!DOCTYPE html><html><head><title>Spotify Auth</title></head><body style="font-family:sans-serif;background:#191414;color:#fff;padding:40px"><h2 style="color:#e05050">Token exchange failed</h2><pre>${serverEscapeHtml(err)}</pre></body></html>`);
+    }
+    const tokenData = await tokenRes.json();
+    await writeSpotifyConfig({
+      ...config,
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at: Date.now() + tokenData.expires_in * 1000,
+    });
+    res.send(`<!DOCTYPE html><html><head><title>Spotify Connected</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#191414;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh}.card{text-align:center;padding:40px}.logo{color:#1db954;font-size:48px;margin-bottom:16px}h2{color:#1db954;font-size:24px;margin-bottom:8px}p{color:#aaa;font-size:14px;margin-top:8px}</style></head><body><div class="card"><div class="logo">&#10003;</div><h2>Connected to Spotify</h2><p>You can close this window.</p></div></body></html>`);
+  } catch (err) {
+    res.send(`<!DOCTYPE html><html><head><title>Spotify Auth</title></head><body style="font-family:sans-serif;background:#191414;color:#fff;padding:40px"><h2 style="color:#e05050">Error</h2><p>${serverEscapeHtml(err.message)}</p></body></html>`);
+  }
+});
+
+// GET /api/spotify/status — return { connected, displayName }
+app.get('/api/spotify/status', async (req, res) => {
+  const config = await readSpotifyConfig();
+  if (!config.access_token || !config.refresh_token) return res.json({ connected: false });
+  try {
+    const meRes = await fetch('https://api.spotify.com/v1/me', {
+      headers: { 'Authorization': `Bearer ${config.access_token}` },
+    });
+    if (meRes.ok) {
+      const me = await meRes.json();
+      return res.json({ connected: true, displayName: me.display_name || me.id || 'Spotify User' });
+    }
+    // Token might be expired — try to check after refresh
+    if (meRes.status === 401 && config.refresh_token) {
+      try {
+        const updated = await refreshSpotifyToken(config);
+        const me2Res = await fetch('https://api.spotify.com/v1/me', {
+          headers: { 'Authorization': `Bearer ${updated.access_token}` },
+        });
+        if (me2Res.ok) {
+          const me2 = await me2Res.json();
+          return res.json({ connected: true, displayName: me2.display_name || me2.id || 'Spotify User' });
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  res.json({ connected: !!(config.access_token), displayName: '' });
+});
+
+// GET /api/spotify/refresh — refresh access token
+app.get('/api/spotify/refresh', async (req, res) => {
+  const config = await readSpotifyConfig();
+  if (!config.refresh_token) return res.status(401).json({ error: 'No refresh token' });
+  try {
+    const updated = await refreshSpotifyToken(config);
+    res.json({ access_token: updated.access_token, expires_at: updated.expires_at });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/spotify/liked?offset=&limit= — proxy liked tracks
+app.get('/api/spotify/liked', async (req, res) => {
+  let config = await readSpotifyConfig();
+  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
+
+  // Auto-refresh if token is about to expire
+  if (config.expires_at && Date.now() > config.expires_at - 60000) {
+    try { config = await refreshSpotifyToken(config); } catch (_) {}
+  }
+
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  try {
+    const spotRes = await fetch(`https://api.spotify.com/v1/me/tracks?offset=${offset}&limit=${limit}`, {
+      headers: { 'Authorization': `Bearer ${config.access_token}` },
+    });
+    if (!spotRes.ok) return res.status(spotRes.status).json({ error: 'Spotify API error' });
+    const data = await spotRes.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/spotify/devices — list available Spotify Connect devices
+app.get('/api/spotify/devices', async (req, res) => {
+  let config = await readSpotifyConfig();
+  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
+  if (config.expires_at && Date.now() > config.expires_at - 60000) {
+    try { config = await refreshSpotifyToken(config); } catch (_) {}
+  }
+  try {
+    const devRes = await fetch('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': `Bearer ${config.access_token}` },
+    });
+    if (!devRes.ok) return res.status(devRes.status).json({ error: 'Spotify API error' });
+    res.json(await devRes.json());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/spotify/disconnect — remove tokens
+app.get('/api/spotify/disconnect', async (req, res) => {
+  const config = await readSpotifyConfig();
+  await writeSpotifyConfig({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
+  res.json({ ok: true });
+});
 
 // GET /api/scan?dir=<absolute path>
 // Scans the given dir + one level of subdirs for MP3/CUE pairs
@@ -47,17 +253,25 @@ app.get('/api/scan', async (req, res) => {
   }
 });
 
-// GET /api/ls?dir=<path> — list subdirectories
+// GET /api/ls?dir=<path> — list subdirectories with name + mtime for sorting
 app.get('/api/ls', async (req, res) => {
   const dir = req.query.dir;
   if (!dir) return res.status(400).json({ error: 'dir required' });
 
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    const subdirs = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    const subdirs = await Promise.all(
+      entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map(async (e) => {
+          try {
+            const st = await fs.promises.stat(path.join(dir, e.name));
+            return { name: e.name, mtime: st.mtimeMs };
+          } catch (_) {
+            return { name: e.name, mtime: 0 };
+          }
+        })
+    );
     const parent = path.dirname(dir) !== dir ? path.dirname(dir) : null;
     return res.json({ dir, parent, subdirs });
   } catch (err) {
@@ -222,6 +436,110 @@ app.get('/api/waveform', async (req, res) => {
   };
   waveformCache.set(cacheKey, result);
   res.json(result);
+});
+
+
+// GET /api/sync-test-waveform
+// Returns pre-computed waveform data for the sync test track (no ffmpeg needed).
+// Sharp peaks at every second boundary so the spectrum aligns visually with the beeps.
+app.get('/api/sync-test-waveform', (req, res) => {
+  const bucketMs   = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
+  const bucketSecs = bucketMs / 1000;
+  const DURATION   = 120;
+  const numBuckets = Math.ceil(DURATION / bucketSecs);
+
+  const peaks = new Uint8Array(numBuckets);
+  const bass  = new Uint8Array(numBuckets);
+  const mids  = new Uint8Array(numBuckets);
+  const highs = new Uint8Array(numBuckets);
+
+  for (let b = 0; b < numBuckets; b++) {
+    const t = b * bucketSecs; // start time of this bucket
+    // How close is the nearest second boundary?
+    const nearestSec = Math.round(t);
+    const dist = Math.abs(t - nearestSec); // seconds from nearest boundary
+    // Marker beep (1 kHz) lasts 80 ms — if this bucket overlaps it, show peak + highs
+    if (dist < 0.08) {
+      const amp = Math.round(220 * (1 - dist / 0.08));
+      peaks[b] = amp;
+      highs[b] = amp;
+    }
+    // Number tone (pitch rises with second number) lasts 40 ms after the marker
+    const secNum = Math.floor(t); // which second we're in
+    const offsetInSec = t - secNum;
+    if (offsetInSec >= 0.08 && offsetInSec < 0.12) {
+      const amp = 180;
+      peaks[b] = Math.max(peaks[b], amp);
+      // Low seconds → bass, high seconds → treble
+      const frac = Math.min(1, secNum / 100);
+      bass[b]  = Math.round(amp * (1 - frac));
+      mids[b]  = Math.round(amp * Math.sin(Math.PI * frac));
+      highs[b] = Math.max(highs[b], Math.round(amp * frac));
+    }
+  }
+
+  const toB64 = (arr) => Buffer.from(arr).toString('base64');
+  res.json({
+    duration:   DURATION,
+    numBuckets,
+    bucketSecs,
+    peaks: toB64(peaks),
+    bass:  toB64(bass),
+    mids:  toB64(mids),
+    highs: toB64(highs),
+  });
+});
+
+// GET /api/sync-test
+// Returns a 120-second WAV with a 1 kHz beep + lower tone every second.
+// Each second N has: 0.08 s of 1 kHz (marker) + 0.04 s of N*100 Hz (number tone).
+// Use this to visually confirm spectrum ↔ audio alignment.
+app.get('/api/sync-test', (req, res) => {
+  const RATE      = 44100;
+  const DURATION  = 120; // seconds
+  const numSamples = RATE * DURATION;
+  const pcm = Buffer.alloc(numSamples * 2); // 16-bit mono
+
+  for (let s = 0; s < DURATION; s++) {
+    // marker beep: 1000 Hz for first 80 ms
+    const markerSamples = Math.round(0.08 * RATE);
+    for (let i = 0; i < markerSamples; i++) {
+      const n = s * RATE + i;
+      const v = Math.round(28000 * Math.sin(2 * Math.PI * 1000 * n / RATE));
+      pcm.writeInt16LE(Math.max(-32768, Math.min(32767, v)), n * 2);
+    }
+    // number tone: (s+1)*80 Hz for next 40 ms, clamped to 8000 Hz
+    const freq = Math.min(8000, (s + 1) * 80);
+    const numToneSamples = Math.round(0.04 * RATE);
+    const toneStart = s * RATE + markerSamples;
+    for (let i = 0; i < numToneSamples; i++) {
+      const n = toneStart + i;
+      const v = Math.round(20000 * Math.sin(2 * Math.PI * freq * n / RATE));
+      pcm.writeInt16LE(Math.max(-32768, Math.min(32767, v)), n * 2);
+    }
+  }
+
+  // Build WAV header
+  const dataLen = pcm.length;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataLen, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);   // PCM
+  header.writeUInt16LE(1, 22);   // mono
+  header.writeUInt32LE(RATE, 24);
+  header.writeUInt32LE(RATE * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32);   // block align
+  header.writeUInt16LE(16, 34);  // bits per sample
+  header.write('data', 36);
+  header.writeUInt32LE(dataLen, 40);
+
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('Content-Length', header.length + dataLen);
+  res.setHeader('Content-Disposition', 'inline; filename="sync-test.wav"');
+  res.end(Buffer.concat([header, pcm]));
 });
 
 // Music index cache (keyed by root dir)
