@@ -278,8 +278,12 @@ class WaveformRenderer {
 
   _fmt(s) {
     if (!isFinite(s) || s < 0) return '0:00.000';
+    const h  = Math.floor(s / 3600);
+    const m  = Math.floor((s % 3600) / 60);
     const ms = Math.floor((s % 1) * 1000);
-    return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    const ss = `${String(Math.floor(s % 60)).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+    return `${m}:${ss}`;
   }
 
   _bindEvents() {

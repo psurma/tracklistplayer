@@ -913,6 +913,53 @@ a.nfo-link:hover { color: #9ecfff; }
 .tl-performer { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 .tl-time { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
 
+/* ── Detect transitions tab ─────────────────────────── */
+#nfo-detect-btn {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text-dim); cursor: pointer; font-family: inherit; font-size: 11px;
+  padding: 3px 8px; white-space: nowrap; flex-shrink: 0;
+}
+#nfo-detect-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+#nfo-tab-detect {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+#detect-header {
+  display: flex; align-items: center;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+#detect-status { font-size: 11px; color: var(--text-muted); }
+#detect-tracks-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+#detect-tracks-list::-webkit-scrollbar { width: 6px; }
+#detect-tracks-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.detect-track-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 14px; font-size: 12px;
+}
+.detect-track-time {
+  color: var(--accent); font-size: 11px; min-width: 38px; flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.detect-conf-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.detect-conf-high { background: #1db954; }
+.detect-conf-mid  { background: #f0a500; }
+.detect-conf-low  { background: #e05050; }
+.detect-track-name {
+  color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#detect-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-top: 1px solid var(--border); flex-shrink: 0;
+}
+#detect-confidence-legend { font-size: 10px; color: var(--text-muted); }
+#detect-apply-btn {
+  background: var(--accent); border: none; border-radius: var(--radius);
+  color: #000; cursor: pointer; font-family: inherit; font-size: 12px;
+  font-weight: 600; padding: 7px 16px;
+}
+#detect-apply-btn:hover { filter: brightness(1.1); }
+#detect-apply-btn:disabled { opacity: 0.4; cursor: default; filter: none; }
+
 /* ── Waveform ────────────────────────────────────────── */
 #waveform-section {
   flex-shrink: 0;

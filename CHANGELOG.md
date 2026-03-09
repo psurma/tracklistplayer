@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.13.0] - 2026-03-09
+
+### Added
+- Auto-detect track transitions from NFO + waveform energy analysis
+  - When a folder has an NFO with a numbered tracklist (e.g. `01. Artist – Title`) but no CUE file, a "Detect" button appears in the NFO pane header
+  - Clicking "Detect" switches to a new DETECT tab and calls `/api/detect-transitions` which box-blurs the waveform peaks and finds N-1 local energy minima as track boundaries
+  - Each detected transition is shown with a timecode and a colour-coded confidence dot (green/amber/red)
+  - "Apply tracklist" reuses the existing `applyScrapedTracklist()` mechanism — saves to localStorage and updates the sidebar track list with seek points
+  - Detect button only appears when the disc has no existing tracklist; hidden after applying
+- New `/api/detect-transitions` server endpoint: box-blurs waveform peaks with a 20-second sliding window, finds local energy minima with ≥3-minute separation, ranks by confidence, returns top N-1 transitions
+- `getOrComputeWaveform()` shared helper extracted from `/api/waveform` — both endpoints now share the decode/cache logic, avoiding redundant ffmpeg calls
+
 ## [1.12.0] - 2026-03-09
 
 ### Fixed

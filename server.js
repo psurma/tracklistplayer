@@ -439,18 +439,11 @@ app.get('/api/nfo', async (req, res) => {
 // Waveform cache (in-memory, keyed by absolute mp3 path)
 const waveformCache = new Map();
 
-// GET /api/waveform?path=<absolute mp3 path>
-// Uses ffmpeg to decode audio at low sample rate, returns per-bucket amplitude + frequency data
-app.get('/api/waveform', async (req, res) => {
-  const filePath = req.query.path;
-  if (!filePath) return res.status(400).json({ error: 'path required' });
-
-  const bucketMs = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
+// Shared helper: decode audio via ffmpeg, bucket into amplitude arrays, cache result.
+// Both /api/waveform and /api/detect-transitions call this to avoid re-decoding.
+async function getOrComputeWaveform(filePath, bucketMs) {
   const cacheKey = `${filePath}@${bucketMs}`;
-  if (waveformCache.has(cacheKey)) return res.json(waveformCache.get(cacheKey));
-
-  try { await fs.promises.access(filePath); }
-  catch (_) { return res.status(404).json({ error: 'File not found' }); }
+  if (waveformCache.has(cacheKey)) return waveformCache.get(cacheKey);
 
   const { spawn } = require('child_process');
   const SAMPLE_RATE = 2000;
@@ -465,7 +458,7 @@ app.get('/api/waveform', async (req, res) => {
   const bufs = [];
   ff.stdout.on('data', (c) => bufs.push(c));
   const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
-  if (code !== 0) return res.status(500).json({ error: 'ffmpeg decode failed' });
+  if (code !== 0) throw new Error('ffmpeg decode failed');
 
   const raw = Buffer.concat(bufs);
   const numSamples = Math.floor(raw.length / 4);
@@ -542,7 +535,106 @@ app.get('/api/waveform', async (req, res) => {
     highs: Buffer.from(highs).toString('base64'),
   };
   waveformCache.set(cacheKey, result);
-  res.json(result);
+  return result;
+}
+
+// GET /api/waveform?path=<absolute mp3 path>
+// Uses ffmpeg to decode audio at low sample rate, returns per-bucket amplitude + frequency data
+app.get('/api/waveform', async (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+
+  const bucketMs = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
+
+  try { await fs.promises.access(filePath); }
+  catch (_) { return res.status(404).json({ error: 'File not found' }); }
+
+  try {
+    res.json(await getOrComputeWaveform(filePath, bucketMs));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/detect-transitions?path=&count=&bucketMs=
+// Analyses waveform energy to find N-1 likely track transition points.
+// count = number of tracks from NFO (0 = return all detected minima)
+app.get('/api/detect-transitions', async (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+
+  const count    = parseInt(req.query.count, 10) || 0;
+  const bucketMs = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
+
+  try { await fs.promises.access(filePath); }
+  catch (_) { return res.status(404).json({ error: 'File not found' }); }
+
+  try {
+    const wf = await getOrComputeWaveform(filePath, bucketMs);
+    const peaksRaw = Buffer.from(wf.peaks, 'base64');
+    const peaks    = new Uint8Array(peaksRaw);
+    const n        = peaks.length;
+
+    // Box-blur with 20-second window using prefix sums (O(n))
+    const windowBuckets  = Math.max(3, Math.round(20000 / bucketMs));
+    const half           = Math.floor(windowBuckets / 2);
+    const prefix         = new Float32Array(n + 1);
+    for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i] + peaks[i];
+
+    const smoothed       = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const lo     = Math.max(0, i - half);
+      const hi     = Math.min(n - 1, i + half);
+      smoothed[i]  = (prefix[hi + 1] - prefix[lo]) / (hi - lo + 1);
+    }
+
+    // Prefix sum over smoothed (for confidence computation)
+    const sPrefix = new Float32Array(n + 1);
+    for (let i = 0; i < n; i++) sPrefix[i + 1] = sPrefix[i] + smoothed[i];
+
+    const skipBuckets    = Math.round(60000  / bucketMs); // skip first/last 60 s
+    const contextBuckets = Math.round(120000 / bucketMs); // ±2-min window for confidence
+
+    // Find all local minima in smoothed signal (i is lower than both immediate neighbours)
+    const allMinima = [];
+    for (let i = skipBuckets + 1; i < n - skipBuckets - 1; i++) {
+      if (smoothed[i] > smoothed[i - 1] || smoothed[i] > smoothed[i + 1]) continue;
+
+      // Compute confidence: depth of dip vs surrounding ±2-min average
+      const ctxLo   = Math.max(0, i - contextBuckets);
+      const ctxHi   = Math.min(n - 1, i + contextBuckets);
+      const localAvg = (sPrefix[ctxHi + 1] - sPrefix[ctxLo]) / (ctxHi - ctxLo + 1);
+      const confidence = localAvg > 0 ? Math.max(0, 1 - smoothed[i] / localAvg) : 0;
+      allMinima.push({ i, confidence });
+    }
+
+    // Greedily select count-1 candidates by descending confidence,
+    // enforcing a minimum 3-minute separation between picks.
+    const minSep  = Math.round(180000 / bucketMs);
+    const wantN   = count > 0 ? count - 1 : allMinima.length;
+    const byCconf = allMinima.slice().sort((a, b) => b.confidence - a.confidence);
+    const selected = [];
+    for (const cand of byCconf) {
+      if (selected.length >= wantN) break;
+      if (selected.some((s) => Math.abs(s.i - cand.i) < minSep)) continue;
+      selected.push(cand);
+    }
+    selected.sort((a, b) => a.i - b.i);
+
+    const bucketSecs  = bucketMs / 1000;
+    const transitions = [
+      { index: 0, seconds: 0, confidence: 1.0 },
+      ...selected.map((c, idx) => ({
+        index:      idx + 1,
+        seconds:    Math.round(c.i * bucketSecs),
+        confidence: Math.round(c.confidence * 100) / 100,
+      })),
+    ];
+
+    res.json({ duration: Math.round(wf.duration), transitions });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 

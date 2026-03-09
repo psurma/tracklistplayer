@@ -229,7 +229,9 @@
         <div id="nfo-pane-header">
           <div id="nfo-tabs">
             <button class="nfo-tab active" data-tab="nfo">NFO</button>
+            <button class="nfo-tab hidden" data-tab="detect" id="nfo-tab-detect-btn">DETECT</button>
           </div>
+          <button id="nfo-detect-btn" title="Auto-detect track transitions" class="hidden">Detect</button>
           <button id="nfo-pane-close" title="Close">&#x2715;</button>
         </div>
         <div id="nfo-tab-nfo">
@@ -237,6 +239,14 @@
         </div>
         <div id="nfo-tab-tracklist" class="hidden">
           <div id="tracklist-content"></div>
+        </div>
+        <div id="nfo-tab-detect" class="hidden">
+          <div id="detect-header"><span id="detect-status">Ready</span></div>
+          <div id="detect-tracks-list"></div>
+          <div id="detect-footer">
+            <span id="detect-confidence-legend">&#9679; high  &#9679; mid  &#9679; low confidence</span>
+            <button id="detect-apply-btn" disabled>Apply tracklist</button>
+          </div>
         </div>
       </div>
     </main>

@@ -448,9 +448,15 @@ const mainResizeH     = document.getElementById('main-resize-h');
 const mainTop         = document.getElementById('main-top');
 const artworkPane     = document.getElementById('artwork-pane');
 const artworkImg      = document.getElementById('artwork-img');
-const nfoTabNfo       = document.getElementById('nfo-tab-nfo');
-const nfoTabTracklist = document.getElementById('nfo-tab-tracklist');
+const nfoTabNfo        = document.getElementById('nfo-tab-nfo');
+const nfoTabTracklist  = document.getElementById('nfo-tab-tracklist');
 const tracklistContent = document.getElementById('tracklist-content');
+const nfoTabDetect     = document.getElementById('nfo-tab-detect');
+const nfoDetectBtn     = document.getElementById('nfo-detect-btn');
+const nfoTabDetectBtn  = document.getElementById('nfo-tab-detect-btn');
+const detectStatus     = document.getElementById('detect-status');
+const detectTracksList = document.getElementById('detect-tracks-list');
+const detectApplyBtn   = document.getElementById('detect-apply-btn');
 
 let activeInfoTab = 'nfo'; // 'nfo' | 'tracklist'
 
@@ -461,6 +467,7 @@ function switchInfoTab(tab) {
   });
   nfoTabNfo.classList.toggle('hidden', tab !== 'nfo');
   nfoTabTracklist.classList.toggle('hidden', tab !== 'tracklist');
+  nfoTabDetect.classList.toggle('hidden', tab !== 'detect');
 }
 
 document.getElementById('nfo-tabs').addEventListener('click', (e) => {
@@ -562,6 +569,9 @@ async function showNfo(dir) {
   try {
     const res = await fetch(`/api/nfo?dir=${encodeURIComponent(dir)}`);
     if (!res.ok) {
+      lastNfoParsedTracks = null;
+      nfoDetectBtn.classList.add('hidden');
+      nfoTabDetectBtn.classList.add('hidden');
       // No NFO — show tracklist tab only if we have tracks; hide NFO tab
       const disc = currentDisc();
       if (disc && disc.tracks && disc.tracks.length > 0) {
@@ -578,13 +588,20 @@ async function showNfo(dir) {
     const text = await res.text();
     lastNfoDir = dir;
     lastNfoText = text;
-    highlightNfo();
+    lastNfoParsedTracks = parseNfoTracklist(text);
     const disc = currentDisc();
+    const canDetect = lastNfoParsedTracks !== null && disc && !disc.tracks.length;
+    nfoDetectBtn.classList.toggle('hidden', !canDetect);
+    nfoTabDetectBtn.classList.toggle('hidden', !canDetect);
+    highlightNfo();
     if (disc) renderTracklist(disc);
     setNfoPaneVisible(true);
     switchInfoTab('nfo');
     nfoBtn.classList.add('hidden'); // hide toggle while pane is open
   } catch (_) {
+    lastNfoParsedTracks = null;
+    nfoDetectBtn.classList.add('hidden');
+    nfoTabDetectBtn.classList.add('hidden');
     setNfoPaneVisible(false);
     nfoBtn.classList.add('hidden');
   }
@@ -598,6 +615,24 @@ nfoPaneClose.addEventListener('click', () => {
 nfoBtn.addEventListener('click', () => {
   setNfoPaneVisible(true);
   nfoBtn.classList.add('hidden');
+});
+
+nfoDetectBtn.addEventListener('click', () => {
+  switchInfoTab('detect');
+  runDetectTransitions();
+});
+
+detectApplyBtn.addEventListener('click', () => {
+  if (!detectStagedTracks || !detectStagedTracks.length) return;
+  tlTargetDisc   = currentDisc();
+  // Strip internal _confidence field before applying
+  tlStagedTracks = detectStagedTracks.map(({ _confidence, ...t }) => t);
+  applyScrapedTracklist();
+  lastNfoParsedTracks = null;
+  detectStagedTracks  = null;
+  nfoDetectBtn.classList.add('hidden');
+  nfoTabDetectBtn.classList.add('hidden');
+  switchInfoTab('tracklist');
 });
 
 finderBtn.addEventListener('click', () => {
@@ -1093,11 +1128,12 @@ function fetchMusicIndex() {
       const n = musicIndex.length;
       // Update counter and live-search every 25 entries
       if (n % 25 === 0 || n <= 5) {
-        searchResults.innerHTML = `<div class="search-empty">Scanning… ${n} albums found</div>`;
         searchCount.textContent = `${n}+`;
         if (searchInput.value.trim()) {
           clearTimeout(searchDebounce);
           searchDebounce = setTimeout(() => runSearch(searchInput.value), 400);
+        } else {
+          searchResults.innerHTML = `<div class="search-empty">Scanning\u2026 ${n} albums found</div>`;
         }
       }
     }
@@ -2534,8 +2570,88 @@ const tlApplyBtn     = document.getElementById('tl-apply-btn');
 const tlSourceLink   = document.getElementById('tl-source-link');
 const tlBackBtn      = document.getElementById('tl-back-btn');
 
-let tlTargetDisc   = null;
-let tlStagedTracks = null;
+let tlTargetDisc        = null;
+let tlStagedTracks      = null;
+let lastNfoParsedTracks = null;
+let detectStagedTracks  = null;
+
+// Parse a numbered tracklist out of NFO text.
+// Returns array of {track, title, performer, startSeconds:null} or null if not found.
+function parseNfoTracklist(text) {
+  if (!text) return null;
+  const re = /^\s*(\d{1,3})[.)]\s+(.+)/gm;
+  const entries = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    entries.push({ num: parseInt(m[1], 10), line: m[2].trim() });
+  }
+  if (entries.length < 3) return null;
+  // Must start near track 1 (allow numbering from 0 or 1)
+  if (entries[0].num > 2) return null;
+  return entries.map((e, i) => {
+    // Split on em-dash, en-dash, or space-hyphen-space to get performer / title
+    const sepMatch = e.line.match(/^(.+?)\s+(?:–|—|-)\s+(.+)$/);
+    return {
+      track:        i + 1,
+      performer:    sepMatch ? sepMatch[1].trim() : '',
+      title:        sepMatch ? sepMatch[2].trim() : e.line,
+      startSeconds: null,
+    };
+  });
+}
+
+// Fetch transition points from server and render the detect tab.
+async function runDetectTransitions() {
+  const disc = currentDisc();
+  if (!disc || !disc.mp3Path || !lastNfoParsedTracks) return;
+
+  detectStatus.textContent = 'Analyzing waveform\u2026';
+  detectTracksList.innerHTML = '';
+  detectApplyBtn.disabled = true;
+  detectStagedTracks = null;
+
+  try {
+    const count    = lastNfoParsedTracks.length;
+    const bucketMs = STORAGE.getSpectrumRes();
+    const url = `/api/detect-transitions?path=${encodeURIComponent(disc.mp3Path)}&count=${count}&bucketMs=${bucketMs}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || res.statusText);
+    }
+    const data = await res.json();
+
+    // Merge detected transition seconds with NFO track names
+    detectStagedTracks = data.transitions.map((tr, i) => {
+      const nfoTrack = lastNfoParsedTracks[i] || { track: i + 1, title: '(unknown)', performer: '' };
+      return {
+        track:        nfoTrack.track,
+        title:        nfoTrack.title,
+        performer:    nfoTrack.performer,
+        startSeconds: tr.seconds,
+        _confidence:  tr.confidence,
+      };
+    });
+
+    detectStatus.textContent = `Found ${detectStagedTracks.length} track${detectStagedTracks.length !== 1 ? 's' : ''}`;
+    detectTracksList.innerHTML = detectStagedTracks.map((t) => {
+      const mm        = Math.floor(t.startSeconds / 60);
+      const ss        = String(t.startSeconds % 60).padStart(2, '0');
+      const timeLabel = `${mm}:${ss}`;
+      const confClass = t._confidence >= 0.6 ? 'detect-conf-high'
+        : t._confidence >= 0.3 ? 'detect-conf-mid' : 'detect-conf-low';
+      const label     = t.performer ? `${t.performer} - ${t.title}` : t.title;
+      return `<div class="detect-track-item">
+        <span class="detect-track-time">${timeLabel}</span>
+        <span class="detect-conf-dot ${confClass}"></span>
+        <span class="detect-track-name">${escapeHtml(label)}</span>
+      </div>`;
+    }).join('');
+    detectApplyBtn.disabled = false;
+  } catch (e) {
+    detectStatus.textContent = `Error: ${escapeHtml(e.message)}`;
+  }
+}
 
 // Derive a clean search query from folder name (strips release-group tags, dates)
 function extractTlQuery(disc) {
