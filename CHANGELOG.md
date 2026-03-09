@@ -1,5 +1,142 @@
 # Changelog
 
+## [1.12.0] - 2026-03-09
+
+### Fixed
+- Windows/Linux: title bar is now visible with native close/minimize/maximize buttons; `titleBarStyle: 'hiddenInset'` and `trafficLightPosition` now only applied on macOS
+- Windows/Linux: traffic-light CSS padding (`padding-left: 76px` on the dir bar) now only applied on macOS via `body.darwin` class instead of `body.electron`
+- "Reveal file" button now works on all platforms: routes through Electron IPC (`shell.showItemInFolder`) in the Electron app; server-side `/api/reveal` falls back to `explorer /select,` on Windows and `xdg-open` on Linux
+- Spotify SDK script moved from blocking `<head>` to async load at end of `<body>` — prevents the entire app from hanging on startup when Spotify's CDN is slow or unavailable
+- Build config now includes Windows (NSIS installer) and Linux (AppImage) targets in addition to macOS DMG
+- "Show in Finder" button tooltip renamed to "Reveal file" for cross-platform clarity
+
+## [1.11.0] - 2026-03-08
+
+### Fixed
+- Search "Building index..." no longer blocks: replaced blocking `/api/index` fetch with a streaming SSE endpoint (`/api/index-stream`) that emits each album as it is found; search panel now shows "Scanning… N albums found" and updates live as the scan progresses — you can start typing and get partial results immediately
+- MixesDB tracklist search regex now scoped to the `mw-search-results` section only, eliminating false matches from navigation/language/sidebar links (previously returned "MixesDB (en)" etc.)
+- MixesDB tracklist fetch now correctly parses plain `<ol><li>Artist - Title</li></ol>` format (most MixesDB pages have no timecodes); shows track numbers instead of timecodes and notes "track order only" when no cue points are available
+- `buildMusicIndex` refactored into a streaming callback form so both the blocking and streaming endpoints share the same scan logic
+
+## [1.10.9] - 2026-03-08
+
+### Added
+- Online tracklist finder: click the new `≣` toolbar button (shown whenever an MP3 is loaded) to search MixesDB for the mix's tracklist; results auto-fill from the folder name, timecoded tracks are shown in a preview list, and "Use this tracklist" applies them to the disc — tracks then appear in the sidebar with proper cue points and persist across restarts via localStorage
+- Server routes `/api/tracklist-search` and `/api/tracklist-fetch` that proxy MixesDB (MediaWiki search + `[MMM] Artist - Title` parsing); no API key required
+
+## [1.10.8] - 2026-03-08
+
+### Fixed
+- Search now always includes the currently loaded root directory alongside library folders; previously if you browsed a root that wasn't in the library the search returned no results even though the folder browser showed the content
+- "Rebuild Index" button now also busts the per-root server cache for the currently loaded directory, not just the library-index cache
+
+## [1.10.7] - 2026-03-08
+
+### Changed
+- Mini player shows no waveform/spectrum — just the footer strip (80 px) with play controls and a seek scrubber
+- Seek scrubber in mini mode is "zoomed" to the current CUE track: 0% = track start, 100% = track end; time display shows elapsed/remaining within that track only; raw single-file discs use the full file duration as before
+- Seek scrubber is slightly thicker (6 px) in mini mode for easier interaction
+- Mini player window allows horizontal width resizing while height is locked at 80 px
+
+## [1.10.6] - 2026-03-08
+
+### Fixed
+- Active track text contrast: track title and play indicator now render white (`#fff`) on the green progress background instead of near-identical green, making them readable across both played and unplayed portions of the row; light-theme uses dark green (`#1a3a2a`) for the same elements
+
+### Changed
+- Mini player now shows the zoom waveform canvas above the footer controls (overview and resize handles are hidden); window height increased to 160 px to accommodate the canvas
+- Mini player allows horizontal width resizing while locking vertical height via `setMaximumSize`; entering/exiting mini mode automatically triggers a waveform re-render so the canvas fills the available space correctly
+
+## [1.10.5] - 2026-03-08
+
+### Added
+- Settings → "Rebuild Index" button: forces a fresh rebuild of the library search index (busts both the library-index and single-root index caches) and shows a status message when done; useful after adding new folders or files without restarting
+
+### Changed
+- Removed the "NOW PLAYING" label from the main pane header
+
+## [1.10.4] - 2026-03-08
+
+### Fixed
+- Play ▶ indicator now shows for raw single-file discs (no CUE) — `.track-num` span was missing from their row so the CSS `::before` never fired
+- Next/Prev now navigate across discs for single-file albums: at the last CUE track or any raw file, Next goes to the next disc; Prev at the first track goes to the previous disc; raw file Prev restarts if more than 3 s in
+- Auto-advance on track end now proceeds to the next disc for raw single-file albums and at the end of a CUE disc
+- Folder browser SSE now limits concurrent `hasMusic` I/O checks to 8 at a time (was unbounded); frees network-drive bandwidth so a double-click scan can complete without waiting for the full folder stream
+- Library search index now rebuilds correctly after a server restart (previous session's in-memory cache is cleared on startup, picking up newly added folders and FLAC support)
+
+## [1.10.3] - 2026-03-08
+
+### Fixed
+- Folder browser now shows FLAC, M4A, AAC, OGG, WAV, OPUS, and WMA directories (previously only MP3/CUE folders were shown, so FLAC-only folders like Roxette were invisible)
+- FLAC/M4A/AAC/OGG/WAV/OPUS/WMA files now scan, appear in the disc list, and play (scanner and `/file` route previously hardcoded to MP3 only)
+- Pressing "Go" no longer stops playback — it only refreshes the folder browser to the new root; the disc list and current track are undisturbed
+- Double-clicking a folder now plays immediately without the single-click also firing a redundant scan first (220 ms debounce distinguishes single vs double click)
+- Stale `scanDirectory` responses are now discarded when a newer scan has started, preventing old results from overwriting the disc list after rapid navigation
+
+### Added
+- Play indicator: active track row in the disc list shows a green ▶ before the track number
+- Progress background: the active track row fills with a subtle green tint from left to right as the track plays, showing how far through you are
+
+## [1.10.2] - 2026-03-08
+
+### Changed
+- Folder browser now streams results via SSE (`/api/ls-stream`): each subdirectory appears in the list the moment its music-content check resolves, inserted in sorted position — no more waiting for the full scan before anything shows; revisits are instant from the server-side cache
+
+## [1.10.1] - 2026-03-08
+
+### Performance
+- Eliminated the fixed 300 ms startup delay in Electron — window now opens the moment the Express server fires its `listening` event instead of waiting a blind timeout
+- `/api/ls` and `/api/scan` results are now cached in memory for the session; repeated navigation to the same folder is instant; pass `bust=1` to force a fresh read
+- `hasMusic` checks in `/api/ls` are now batched 20 at a time instead of all-at-once, preventing network drive I/O saturation on large library roots
+- `init()` now fetches `/api/config` and loads the library simultaneously, then runs `loadFolderBrowser` and `scanDirectory` in parallel — cuts startup rendering time roughly in half
+
+### Added
+- Directory input shows a dropdown of library folders on focus — click any entry to load it instantly; still accepts free-text paths as before
+
+## [1.10.0] - 2026-03-08
+
+### Added
+- Library: add multiple music folders to a persistent library (`~/.tracklistplayer/library.json`); click the &#9783; toolbar button to open the Library modal — use "+ Add Folder" (native picker in Electron) to add folders, ✕ per row to remove
+- Search now indexes and searches across all library folders simultaneously via `/api/library-index`; falls back to the current active directory if no library folders have been added
+- Library index is cached server-side and invalidated automatically when folders are added or removed
+
+## [1.9.8] - 2026-03-08
+
+### Fixed
+- Search result count was wrong when results included raw MP3 discs (no CUE) — now counts rendered rows, not just CUE track entries
+
+### Added
+- Track duration shown on the right of each search result row (computed from adjacent CUE start times; last track of each disc and raw MP3s show no duration since the total file length isn't available without scanning)
+
+## [1.9.7] - 2026-03-08
+
+### Changed
+- Search is now a centred popup modal (680 px wide, up to 70 vh tall) with a dark backdrop instead of an inline panel that consumed sidebar space; click outside or press Escape to dismiss; input is auto-focused and auto-selected on open
+
+## [1.9.6] - 2026-03-08
+
+### Added
+- Drag-and-drop MP3 playback: drag one or more MP3 files onto the app window; a full-screen overlay appears while dragging, then files are loaded as a playlist and the first track plays immediately; in Electron, server-side waveform and artwork work as normal; in browser mode a blob URL is used for direct playback
+
+### Changed
+- Sidebar panel splitter (between folder browser and disc list) is now 18 px tall with an accent-coloured top border and a centred grip pill — much easier to grab, matching the style of the main resize handles
+- Folder browser pane uses `--bg2` background; disc list uses `--bg` — the two panes are now visually distinct
+
+## [1.9.5] - 2026-03-08
+
+### Fixed
+- Folder browser now hides empty subdirectories (e.g. scene release-group tag folders like `[MiRAGE] - ...`) that contain no MP3 or CUE files; prevents confusing "No MP3/CUE files here" when clicking on them
+
+## [1.9.4] - 2026-03-08
+
+### Added
+- NFO links are now clickable: http/https URLs are auto-detected and rendered as blue underlined anchors; clicking opens in the default browser (via Electron shell.openExternal, or window.open in browser mode)
+
+## [1.9.3] - 2026-03-08
+
+### Fixed
+- Star button now appears on raw MP3 discs that have no CUE sheet; previously the no-tracks code path rendered the item without a favourite button
+
 ## [1.9.2] - 2026-03-08
 
 ### Fixed

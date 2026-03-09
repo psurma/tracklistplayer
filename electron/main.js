@@ -39,6 +39,11 @@ function startServer() {
     process.argv = [process.argv[0], process.argv[1], ...args];
   }
   server = require('../server');
+  return new Promise((resolve) => {
+    if (server.listening) return resolve();
+    server.once('listening', resolve);
+    server.once('error', resolve); // don't block indefinitely on port error
+  });
 }
 
 let mainWindow;
@@ -46,6 +51,7 @@ let mainWindow;
 function createWindow() {
   const state = loadWindowState();
 
+  const isMac = process.platform === 'darwin';
   mainWindow = new BrowserWindow({
     x: state.x,
     y: state.y,
@@ -62,8 +68,7 @@ function createWindow() {
       contextIsolation: true,
     },
     // macOS: inline traffic lights, positioned so they don't overlap the dir input
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 14 },
+    ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 } } : {}),
   });
 
   if (state.isMaximized) mainWindow.maximize();
@@ -117,12 +122,10 @@ function registerMediaKeys() {
   });
 }
 
-app.whenReady().then(() => {
-  startServer();
-  setTimeout(() => {
-    createWindow();
-    registerMediaKeys();
-  }, 300);
+app.whenReady().then(async () => {
+  await startServer();
+  createWindow();
+  registerMediaKeys();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -142,6 +145,10 @@ ipcMain.handle('reveal-in-finder', (_event, filePath) => {
   shell.showItemInFolder(filePath);
 });
 
+ipcMain.handle('open-external', (_event, url) => {
+  if (/^https?:\/\//.test(url)) shell.openExternal(url);
+});
+
 ipcMain.handle('pick-directory', async () => {
   const { dialog } = require('electron');
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -154,18 +161,22 @@ ipcMain.handle('pick-directory', async () => {
 // Mini player: shrink window to 80 px tall, always-on-top; restore on exit
 let preMiniState = null;
 
+const MINI_H = 80; // just the footer strip
+
 ipcMain.handle('set-mini-player', (_event, mini) => {
   if (!mainWindow) return;
   if (mini) {
     preMiniState = mainWindow.getBounds();
     const { x, y, width, height } = preMiniState;
     mainWindow.setAlwaysOnTop(true);
-    mainWindow.setResizable(false);
-    mainWindow.setMinimumSize(400, 80);
-    // Anchor bottom edge so the window slides down rather than jumping to the top
-    mainWindow.setBounds({ x, y: y + height - 80, width: Math.max(width, 500), height: 80 }, true);
+    mainWindow.setResizable(true);           // allow width resize
+    mainWindow.setMinimumSize(400, MINI_H);
+    mainWindow.setMaximumSize(99999, MINI_H); // lock height
+    // Anchor bottom edge so the window slides up rather than jumping to the top
+    mainWindow.setBounds({ x, y: y + height - MINI_H, width: Math.max(width, 500), height: MINI_H }, true);
   } else {
     mainWindow.setAlwaysOnTop(false);
+    mainWindow.setMaximumSize(99999, 99999); // unlock height first
     mainWindow.setResizable(true);
     if (preMiniState) {
       mainWindow.setMinimumSize(600, 400);

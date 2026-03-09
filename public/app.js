@@ -1,8 +1,9 @@
 'use strict';
 
-// Tag body when running inside Electron (for traffic-light padding CSS)
+// Tag body when running inside Electron; also tag macOS for traffic-light padding
 if (navigator.userAgent.includes('Electron')) {
   document.body.classList.add('electron');
+  if (window.electronAPI?.platform === 'darwin') document.body.classList.add('darwin');
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -112,7 +113,8 @@ const spotifyBtn       = document.getElementById('spotify-btn');
 const spotifySearchBtn = document.getElementById('spotify-search-btn');
 const soundcloudBtn    = document.getElementById('soundcloud-btn');
 const finderBtn       = document.getElementById('finder-btn');
-const nfoBtn        = document.getElementById('nfo-btn');
+const nfoBtn          = document.getElementById('nfo-btn');
+const tlBtn           = document.getElementById('tl-btn');
 const themeToggle      = document.getElementById('theme-toggle');
 const waveformToggle   = document.getElementById('waveform-toggle');
 const miniBtn       = document.getElementById('mini-btn');
@@ -156,9 +158,16 @@ const STORAGE = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatTime(secs) {
   if (!isFinite(secs) || secs < 0) return '0:00';
-  const m = Math.floor(secs / 60);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
   const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function formatDuration(secs) {
+  if (secs == null || !isFinite(secs) || secs < 0) return '';
+  return formatTime(secs);
 }
 
 function fileUrl(absPath) {
@@ -296,65 +305,141 @@ function sortedSubdirs(subdirs) {
   return copy;
 }
 
-function renderFolderItems(dir, subdirs) {
-  // Preserve up-row if present
-  const upRow = folderBrowser.querySelector('.folder-up');
-  const activeNames = new Set(
-    [...folderBrowser.querySelectorAll('.folder-item.active')].map((el) => el.dataset.name)
-  );
-  // Remove all folder items
-  folderBrowser.querySelectorAll('.folder-item').forEach((el) => el.remove());
-
-  for (const entry of sortedSubdirs(subdirs)) {
-    const item = document.createElement('div');
-    item.className = 'folder-item';
-    item.dataset.name = entry.name;
-    if (activeNames.has(entry.name)) item.classList.add('active');
-    item.innerHTML = `<span class="folder-label">${escapeHtml(entry.name)}</span>`;
-    const fullPath = `${dir}/${entry.name}`;
-    item.addEventListener('click', () => {
+function makeFolderItem(dir, name, mtime, activeNames) {
+  const item = document.createElement('div');
+  item.className = 'folder-item';
+  item.dataset.name = name;
+  item.dataset.mtime = mtime || 0;
+  if (activeNames && activeNames.has(name)) item.classList.add('active');
+  item.innerHTML = `<span class="folder-label">${escapeHtml(name)}</span>`;
+  const fullPath = `${dir}/${name}`;
+  let clickTimer = null;
+  item.addEventListener('click', () => {
+    if (clickTimer) return; // dblclick will handle it
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
       folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
       item.classList.add('active');
       STORAGE.setScanDir(fullPath);
       scanDirectory(fullPath);
-    });
-    item.addEventListener('dblclick', () => { scanDirectory(fullPath, true); });
-    folderBrowser.appendChild(item);
-  }
+    }, 220);
+  });
+  item.addEventListener('dblclick', () => {
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+    folderBrowser.querySelectorAll('.folder-item.active').forEach((el) => el.classList.remove('active'));
+    item.classList.add('active');
+    STORAGE.setScanDir(fullPath);
+    scanDirectory(fullPath, true);
+  });
+  return item;
+}
 
+function insertFolderItemSorted(dir, name, mtime, activeNames) {
+  const item = makeFolderItem(dir, name, mtime, activeNames);
+  const existing = [...folderBrowser.querySelectorAll('.folder-item')];
+  if (folderSort === 'date') {
+    const ref = existing.find((el) => mtime > Number(el.dataset.mtime || 0));
+    ref ? folderBrowser.insertBefore(item, ref) : folderBrowser.appendChild(item);
+  } else {
+    const ref = existing.find((el) =>
+      name.localeCompare(el.dataset.name || '', undefined, { sensitivity: 'base' }) < 0
+    );
+    ref ? folderBrowser.insertBefore(item, ref) : folderBrowser.appendChild(item);
+  }
+  return item;
+}
+
+function renderFolderItems(dir, subdirs) {
+  const activeNames = new Set(
+    [...folderBrowser.querySelectorAll('.folder-item.active')].map((el) => el.dataset.name)
+  );
+  folderBrowser.querySelectorAll('.folder-item').forEach((el) => el.remove());
+  for (const entry of sortedSubdirs(subdirs)) {
+    folderBrowser.appendChild(makeFolderItem(dir, entry.name, entry.mtime, activeNames));
+  }
   applyFilter(filterInput.value);
 }
 
-async function loadFolderBrowser(dir) {
+function addUpRow(parent) {
+  const up = document.createElement('div');
+  up.className = 'folder-up';
+  up.textContent = '↑  ..';
+  up.addEventListener('click', () => loadFolderBrowser(parent));
+  folderBrowser.prepend(up);
+}
+
+async function loadFolderBrowser(dir, bust = false) {
   state.browseDir = dir;
-  folderBrowser.innerHTML = '<div class="status-msg">Loading...</div>';
+  lastBrowseDir = dir;
+  lastSubdirs = [];
 
-  try {
-    const res = await fetch(`/api/ls?dir=${encodeURIComponent(dir)}`);
-    if (!res.ok) throw new Error('Failed to list directory');
-    const data = await res.json();
-    lastBrowseDir = dir;
-    lastSubdirs = data.subdirs || [];
+  return new Promise((resolve) => {
+    folderBrowser.innerHTML = '<div class="status-msg">Loading…</div>';
+    let metaDone = false;
+    let parent = null;
 
-    folderBrowser.innerHTML = '';
+    const url = `/api/ls-stream?dir=${encodeURIComponent(dir)}${bust ? '&bust=1' : ''}`;
+    const source = new EventSource(url);
 
-    if (data.parent) {
-      const up = document.createElement('div');
-      up.className = 'folder-up';
-      up.textContent = '↑  ..';
-      up.addEventListener('click', () => loadFolderBrowser(data.parent));
-      folderBrowser.appendChild(up);
-    }
+    const activeNames = new Set(
+      [...folderBrowser.querySelectorAll('.folder-item.active')].map((el) => el.dataset.name)
+    );
 
-    if (!lastSubdirs.length && !data.parent) {
-      folderBrowser.innerHTML = '<div class="status-msg">No subfolders.</div>';
-      return;
-    }
+    source.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
 
-    renderFolderItems(dir, lastSubdirs);
-  } catch (err) {
-    folderBrowser.innerHTML = `<div class="status-msg" style="color:#c06060">${escapeHtml(err.message)}</div>`;
-  }
+      if (msg.type === 'batch') {
+        // Cache hit — all data arrives at once
+        source.close();
+        parent = msg.parent;
+        lastSubdirs = msg.subdirs || [];
+        folderBrowser.innerHTML = '';
+        if (parent) addUpRow(parent);
+        if (!lastSubdirs.length && !parent) {
+          folderBrowser.innerHTML = '<div class="status-msg">No subfolders.</div>';
+        } else {
+          renderFolderItems(dir, lastSubdirs);
+        }
+        resolve();
+        return;
+      }
+
+      if (msg.type === 'meta') {
+        parent = msg.parent;
+        folderBrowser.innerHTML = '';
+        if (parent) addUpRow(parent);
+        metaDone = true;
+        return;
+      }
+
+      if (msg.type === 'entry') {
+        if (!metaDone) { folderBrowser.innerHTML = ''; metaDone = true; }
+        const entry = { name: msg.name, mtime: msg.mtime };
+        lastSubdirs.push(entry);
+        insertFolderItemSorted(dir, msg.name, msg.mtime, activeNames);
+        applyFilter(filterInput.value);
+        return;
+      }
+
+      if (msg.type === 'done') {
+        source.close();
+        if (!lastSubdirs.length && !parent) {
+          folderBrowser.innerHTML = '<div class="status-msg">No subfolders.</div>';
+        }
+        resolve();
+        return;
+      }
+
+      if (msg.type === 'error') {
+        source.close();
+        folderBrowser.innerHTML = `<div class="status-msg" style="color:#c06060">${escapeHtml(msg.message)}</div>`;
+        resolve();
+      }
+    };
+
+    source.onerror = () => { source.close(); resolve(); };
+  });
 }
 
 // ── NFO / Tracklist pane ──────────────────────────────────────────────────────
@@ -394,6 +479,12 @@ const nfoPaneClose = document.getElementById('nfo-pane-close');
 let lastNfoDir = '';
 let lastNfoText = '';
 
+const URL_RE = /https?:\/\/[^\s\])"'>]+/g;
+function linkifyNfo(html) {
+  // html is already escaped — wrap bare URLs in anchor tags
+  return html.replace(URL_RE, (url) => `<a class="nfo-link" href="${url}" title="${url}">${url}</a>`);
+}
+
 function highlightNfo() {
   if (!lastNfoText) return;
   const disc = currentDisc();
@@ -401,22 +492,35 @@ function highlightNfo() {
     ? (disc.tracks[state.currentTrackIndex] || {}).title
     : null;
 
+  const escaped = escapeHtml(lastNfoText);
+
   if (!title) {
-    nfoContent.textContent = lastNfoText;
+    nfoContent.innerHTML = linkifyNfo(escaped);
     return;
   }
 
-  const escaped = escapeHtml(lastNfoText);
   const escapedTitle = escapeHtml(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const highlighted = escaped.replace(
     new RegExp(escapedTitle, 'gi'),
     (m) => `<mark class="nfo-hl">${m}</mark>`
   );
-  nfoContent.innerHTML = highlighted;
+  nfoContent.innerHTML = linkifyNfo(highlighted);
 
   const first = nfoContent.querySelector('.nfo-hl');
   if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
+
+nfoContent.addEventListener('click', (e) => {
+  const link = e.target.closest('.nfo-link');
+  if (!link) return;
+  e.preventDefault();
+  const url = link.href;
+  if (window.electronAPI && window.electronAPI.openExternal) {
+    window.electronAPI.openExternal(url);
+  } else {
+    window.open(url, '_blank', 'noopener');
+  }
+});
 
 function formatTimeShort(s) {
   if (!isFinite(s) || s < 0) return '';
@@ -498,8 +602,24 @@ nfoBtn.addEventListener('click', () => {
 
 finderBtn.addEventListener('click', () => {
   const p = finderBtn.dataset.path;
-  if (p) fetch(`/api/reveal?path=${encodeURIComponent(p)}`).catch(() => {});
+  if (!p) return;
+  if (window.electronAPI?.revealFile) window.electronAPI.revealFile(p);
+  else fetch(`/api/reveal?path=${encodeURIComponent(p)}`).catch(() => {});
 });
+
+// Returns {start, end} in seconds for the currently playing track (or whole file for raw discs).
+// Used by mini-player to scope the seek bar to the current track only.
+function getTrackBounds() {
+  const disc = currentDisc();
+  const dur = audio.duration;
+  const fallback = { start: 0, end: isFinite(dur) ? dur : 0 };
+  if (!disc || !disc.tracks || !disc.tracks.length) return fallback;
+  const idx = state.currentTrackIndex >= 0 ? state.currentTrackIndex : 0;
+  const track = disc.tracks[idx];
+  if (!track) return fallback;
+  const next = disc.tracks[idx + 1];
+  return { start: track.startSeconds, end: next ? next.startSeconds : (isFinite(dur) ? dur : track.startSeconds) };
+}
 
 // ── Track detection ───────────────────────────────────────────────────────────
 function detectCurrentTrack(currentTime) {
@@ -527,6 +647,7 @@ function updateNowPlaying(trackIdx) {
     soundcloudBtn.classList.add('hidden');
     finderBtn.classList.toggle('hidden', !disc.mp3Path);
     if (disc.mp3Path) finderBtn.dataset.path = disc.mp3Path;
+    tlBtn.classList.toggle('hidden', !disc.mp3Path);
     return;
   }
 
@@ -551,19 +672,44 @@ function updateNowPlaying(trackIdx) {
   if (disc.mp3Path) {
     finderBtn.dataset.path = disc.mp3Path;
     finderBtn.classList.remove('hidden');
+    tlBtn.classList.remove('hidden');
   } else {
     finderBtn.classList.add('hidden');
+    tlBtn.classList.add('hidden');
   }
 
   if (isMini) updateMiniInfo();
 }
 
 function highlightTrackInSidebar(discId, trackIdx) {
-  discList.querySelectorAll('.track-item').forEach((el) => el.classList.remove('active'));
-  if (trackIdx >= 0) {
-    const el = discList.querySelector(`.track-item[data-disc="${discId}"][data-track="${trackIdx}"]`);
-    if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  discList.querySelectorAll('.track-item').forEach((el) => {
+    el.classList.remove('active');
+    el.style.removeProperty('--prog');
+  });
+  // trackIdx -1 means raw disc (no CUE) — still highlight the single file row
+  const el = discList.querySelector(`.track-item[data-disc="${discId}"][data-track="${trackIdx}"]`);
+  if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+}
+
+function updateTrackProgress() {
+  const el = discList.querySelector('.track-item.active');
+  if (!el || !isFinite(audio.duration) || audio.duration <= 0) return;
+  const disc = currentDisc();
+  if (!disc) return;
+  const ct = audio.currentTime;
+  let pct;
+  const track = disc.tracks[state.currentTrackIndex];
+  if (track) {
+    // CUE-backed disc: progress within this specific track
+    const next = disc.tracks[state.currentTrackIndex + 1];
+    const trackEnd = next ? next.startSeconds : audio.duration;
+    if (trackEnd <= track.startSeconds) return;
+    pct = ((ct - track.startSeconds) / (trackEnd - track.startSeconds)) * 100;
+  } else {
+    // Raw file (no CUE): progress through the whole file
+    pct = (ct / audio.duration) * 100;
   }
+  el.style.setProperty('--prog', `${Math.min(100, Math.max(0, pct)).toFixed(1)}%`);
 }
 
 // ── Seek bar track markers ─────────────────────────────────────────────────────
@@ -636,25 +782,39 @@ seekTicks.addEventListener('click', (e) => {
 });
 
 // ── Audio / disc loading ──────────────────────────────────────────────────────
+function discAudioSrc(disc) {
+  return disc.blobUrl || (disc.mp3Path ? fileUrl(disc.mp3Path) : null);
+}
+
 function loadDisc(disc) {
-  if (!disc.mp3Path) return;
+  const src = discAudioSrc(disc);
+  if (!src) return;
   state.currentDiscId = disc.id;
   state.currentTrackIndex = -1;
-  audio.src = fileUrl(disc.mp3Path);
+  audio.src = src;
   audio.load();
   updateNowPlaying(-1);
   highlightTrackInSidebar(disc.id, -1);
-  loadWaveform(disc);
-  loadArtwork(disc);
+  if (disc.mp3Path) {
+    loadWaveform(disc);
+    loadArtwork(disc);
+  } else {
+    waveformRenderer.clear();
+    wfSection.classList.add('hidden');
+  }
 }
 
 function playDiscAtTrack(disc, trackIdx) {
-  if (!disc.mp3Path) return;
+  const src = discAudioSrc(disc);
+  if (!src) return;
 
   const alreadyLoaded = state.currentDiscId === disc.id && audio.src;
-  if (!alreadyLoaded || !audio.src.includes(encodeURIComponent(disc.mp3Path))) {
+  const srcMatch = disc.mp3Path
+    ? audio.src.includes(encodeURIComponent(disc.mp3Path))
+    : audio.src === disc.blobUrl;
+  if (!alreadyLoaded || !srcMatch) {
     state.currentDiscId = disc.id;
-    audio.src = fileUrl(disc.mp3Path);
+    audio.src = src;
     audio.load();
   } else {
     state.currentDiscId = disc.id;
@@ -690,6 +850,7 @@ function renderDiscList() {
   }
 
   for (const disc of state.discs) {
+    loadScrapedTracklist(disc); // inject persisted tracklist if disc has no CUE tracks
     const section = document.createElement('div');
     section.className = 'disc-section';
 
@@ -714,8 +875,41 @@ function renderDiscList() {
       item.className = 'track-item';
       item.dataset.disc = disc.id;
       item.dataset.track = -1;
-      item.innerHTML = `<span class="track-title" style="color:var(--text-dim)">${escapeHtml(disc.mp3File)}</span>`;
-      item.addEventListener('click', () => { loadDisc(disc); audio.play().catch(() => {}); });
+      const rawKey = favKey(disc.mp3File, 1);
+      const rawIsFav = state.favorites.has(rawKey);
+      item.innerHTML = `
+        <span class="track-num"></span>
+        <span class="track-info">
+          <div class="track-title" style="color:var(--text-dim)">${escapeHtml(disc.mp3File)}</div>
+        </span>
+        <button class="fav-btn${rawIsFav ? ' fav-active' : ''}" data-key="${escapeHtml(rawKey)}" title="${rawIsFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
+      `;
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.fav-btn')) return;
+        loadDisc(disc);
+        audio.play().catch(() => {});
+      });
+      item.querySelector('.fav-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const starEl = e.currentTarget;
+        if (state.favorites.has(rawKey)) {
+          state.favorites.delete(rawKey);
+          starEl.classList.remove('fav-active');
+          starEl.title = 'Add to favorites';
+        } else {
+          state.favorites.set(rawKey, {
+            mp3File: disc.mp3File, mp3Path: disc.mp3Path, dir: disc.dir || '',
+            trackNumber: 1, title: disc.albumTitle || disc.mp3File,
+            performer: disc.albumPerformer || '', albumTitle: disc.albumTitle || '',
+            startSeconds: 0,
+          });
+          starEl.classList.add('fav-active');
+          starEl.title = 'Remove from favorites';
+        }
+        saveFavorites();
+        const favsPanel = document.getElementById('favs-panel');
+        if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
+      });
       section.appendChild(item);
       discList.appendChild(section);
       continue;
@@ -762,7 +956,88 @@ function renderDiscList() {
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
-const searchPanel  = document.getElementById('search-panel');
+// ── Library management ────────────────────────────────────────────────────────
+const libraryModalOverlay = document.getElementById('library-modal-overlay');
+const libraryFolderList   = document.getElementById('library-folder-list');
+const libraryBtn          = document.getElementById('library-btn');
+const libraryModalClose   = document.getElementById('library-modal-close');
+const libraryAddBtn       = document.getElementById('library-add-btn');
+
+let libraryFolders = [];  // in-memory copy, synced with server
+
+async function loadLibrary() {
+  try {
+    const res = await fetch('/api/library');
+    const data = await res.json();
+    libraryFolders = data.folders || [];
+  } catch (_) {
+    libraryFolders = [];
+  }
+}
+
+function renderLibraryList() {
+  libraryFolderList.innerHTML = '';
+  if (!libraryFolders.length) {
+    libraryFolderList.innerHTML = '<div class="library-empty-msg">No folders in library yet.<br>Click "+ Add Folder" to get started.</div>';
+    return;
+  }
+  for (const folder of libraryFolders) {
+    const item = document.createElement('div');
+    item.className = 'library-folder-item';
+    const name = folder.split('/').filter(Boolean).pop() || folder;
+    item.innerHTML = `
+      <div style="flex:1;min-width:0">
+        <div class="library-folder-name">${escapeHtml(name)}</div>
+        <div class="library-folder-path">${escapeHtml(folder)}</div>
+      </div>
+      <button class="library-folder-remove" title="Remove from library">&#x2715;</button>
+    `;
+    item.querySelector('.library-folder-remove').addEventListener('click', async () => {
+      await fetch('/api/library', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder }) });
+      libraryFolders = libraryFolders.filter((f) => f !== folder);
+      musicIndex = null;  // invalidate search index
+      renderLibraryList();
+    });
+    libraryFolderList.appendChild(item);
+  }
+}
+
+async function openLibraryModal() {
+  await loadLibrary();
+  renderLibraryList();
+  libraryModalOverlay.classList.add('active');
+  libraryBtn.classList.add('active');
+}
+
+function closeLibraryModal() {
+  libraryModalOverlay.classList.remove('active');
+  libraryBtn.classList.remove('active');
+}
+
+libraryBtn.addEventListener('click', () => {
+  if (libraryModalOverlay.classList.contains('active')) closeLibraryModal();
+  else openLibraryModal();
+});
+libraryModalClose.addEventListener('click', closeLibraryModal);
+libraryModalOverlay.addEventListener('click', (e) => { if (e.target === libraryModalOverlay) closeLibraryModal(); });
+
+libraryAddBtn.addEventListener('click', async () => {
+  let folder = null;
+  if (window.electronAPI?.pickDirectory) {
+    folder = await window.electronAPI.pickDirectory();
+  } else {
+    folder = prompt('Enter folder path:');
+  }
+  if (!folder) return;
+  const res = await fetch('/api/library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder }) });
+  const data = await res.json();
+  libraryFolders = data.folders || [];
+  musicIndex = null;  // invalidate search index
+  renderLibraryList();
+});
+
+// ── Search ────────────────────────────────────────────────────────────────────
+const searchModalOverlay = document.getElementById('search-modal-overlay');
 const searchInput  = document.getElementById('search-input');
 const searchCount  = document.getElementById('search-count');
 const searchResults = document.getElementById('search-results');
@@ -773,32 +1048,83 @@ let musicIndex = null;      // null = not yet loaded
 let indexLoading = false;
 
 function openSearchPanel() {
-  searchPanel.classList.remove('hidden');
+  searchModalOverlay.classList.add('active');
   searchBtn.classList.add('active');
   searchInput.focus();
+  searchInput.select();
   if (!musicIndex && !indexLoading) fetchMusicIndex();
 }
 
 function closeSearchPanel() {
-  searchPanel.classList.add('hidden');
+  searchModalOverlay.classList.remove('active');
   searchBtn.classList.remove('active');
 }
 
-async function fetchMusicIndex() {
-  const root = STORAGE.getDir();
-  if (!root) { searchResults.innerHTML = '<div class="search-empty">Load a directory first.</div>'; return; }
+let indexEventSources = []; // track open SSE streams so we can cancel them
+
+function fetchMusicIndex() {
+  // Cancel any in-progress streams
+  for (const src of indexEventSources) src.close();
+  indexEventSources = [];
+
   indexLoading = true;
-  searchResults.innerHTML = '<div class="search-empty">Building index…</div>';
-  try {
-    const res = await fetch(`/api/index?root=${encodeURIComponent(root)}`);
-    if (!res.ok) throw new Error(res.statusText);
-    musicIndex = await res.json();
-    runSearch(searchInput.value);
-  } catch (e) {
+  musicIndex = [];
+  searchResults.innerHTML = '<div class="search-empty">Scanning… 0 albums found</div>';
+  searchCount.textContent = '';
+
+  loadLibrary().then(() => {
+    const currentRoot = STORAGE.getDir();
+    const roots = [...new Set([...libraryFolders, currentRoot].filter(Boolean))];
+    if (!roots.length) {
+      searchResults.innerHTML = '<div class="search-empty">Add folders to your library or load a directory first.</div>';
+      indexLoading = false;
+      return;
+    }
+
+    const seen = new Set();
+    let pending = roots.length;
+    let searchDebounce = null;
+
+    function onEntry(entry) {
+      const key = entry.mp3Path || entry.dir;
+      if (seen.has(key)) return;
+      seen.add(key);
+      musicIndex.push(entry);
+      const n = musicIndex.length;
+      // Update counter and live-search every 25 entries
+      if (n % 25 === 0 || n <= 5) {
+        searchResults.innerHTML = `<div class="search-empty">Scanning… ${n} albums found</div>`;
+        searchCount.textContent = `${n}+`;
+        if (searchInput.value.trim()) {
+          clearTimeout(searchDebounce);
+          searchDebounce = setTimeout(() => runSearch(searchInput.value), 400);
+        }
+      }
+    }
+
+    function onDone() {
+      pending--;
+      if (pending > 0) return;
+      indexLoading = false;
+      searchCount.textContent = `${musicIndex.length} albums`;
+      runSearch(searchInput.value);
+    }
+
+    for (const root of roots) {
+      const src = new EventSource(`/api/index-stream?root=${encodeURIComponent(root)}`);
+      indexEventSources.push(src);
+      src.onmessage = (e) => {
+        let data;
+        try { data = JSON.parse(e.data); } catch (_) { return; }
+        if (data.done || data.error) { src.close(); onDone(); return; }
+        onEntry(data);
+      };
+      src.onerror = () => { src.close(); onDone(); };
+    }
+  }).catch((e) => {
     searchResults.innerHTML = `<div class="search-empty">Index failed: ${escapeHtml(e.message)}</div>`;
-  } finally {
     indexLoading = false;
-  }
+  });
 }
 
 function highlight(text, words) {
@@ -839,8 +1165,9 @@ function runSearch(query) {
     groups.push({ disc, tracksToShow, discMatch, matchingTracks });
   }
 
-  const totalTracks = groups.reduce((s, g) => s + g.tracksToShow.length, 0);
-  searchCount.textContent = `${totalTracks} result${totalTracks !== 1 ? 's' : ''}`;
+  const totalRows = groups.reduce((s, g) =>
+    s + (g.disc.tracks.length === 0 ? 1 : g.tracksToShow.length), 0);
+  searchCount.textContent = `${totalRows} result${totalRows !== 1 ? 's' : ''}`;
 
   if (groups.length === 0) {
     searchResults.innerHTML = '<div class="search-empty">No results.</div>';
@@ -869,9 +1196,13 @@ function runSearch(query) {
         const trackIdx = disc.tracks.indexOf(track);
         const row = document.createElement('div');
         row.className = 'search-result';
+        const dur = track.durationSeconds != null
+          ? `<span class="search-result-dur">${formatDuration(track.durationSeconds)}</span>`
+          : '';
         row.innerHTML = `<span class="search-result-num">${String(track.track).padStart(2, '0')}</span>`
           + `<span class="search-result-title">${highlight(track.title || '—', words)}</span>`
-          + (track.performer ? `<span class="search-result-artist">${highlight(track.performer, words)}</span>` : '');
+          + (track.performer ? `<span class="search-result-artist">${highlight(track.performer, words)}</span>` : '')
+          + dur;
         row.addEventListener('click', () => playFromSearch(disc, trackIdx));
         frag.appendChild(row);
       }
@@ -896,10 +1227,13 @@ async function playFromSearch(indexDisc, trackIdx) {
 }
 
 searchBtn.addEventListener('click', () => {
-  if (searchPanel.classList.contains('hidden')) openSearchPanel();
-  else closeSearchPanel();
+  if (searchModalOverlay.classList.contains('active')) closeSearchPanel();
+  else openSearchPanel();
 });
 searchClose.addEventListener('click', closeSearchPanel);
+searchModalOverlay.addEventListener('click', (e) => {
+  if (e.target === searchModalOverlay) closeSearchPanel();
+});
 searchInput.addEventListener('input', () => runSearch(searchInput.value));
 searchInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSearchPanel(); });
 
@@ -1267,7 +1601,10 @@ spotifyClose.addEventListener('click', closeSpotifyPanel);
 spotifyConnectBtnPanel.addEventListener('click', connectSpotify);
 
 // ── API ───────────────────────────────────────────────────────────────────────
+let scanToken = 0;
+
 async function scanDirectory(dir, autoplay = false) {
+  const token = ++scanToken;
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
   currentWfPath = null;
   waveformRenderer.clear();
@@ -1280,6 +1617,7 @@ async function scanDirectory(dir, autoplay = false) {
       throw new Error(data.error || res.statusText);
     }
     const data = await res.json();
+    if (token !== scanToken) return; // superseded by a newer scan
     state.discs = data.discs;
     renderDiscList();
 
@@ -1337,10 +1675,21 @@ audio.addEventListener('timeupdate', () => {
   if (state.seeking) return;
   const ct = audio.currentTime;
   const dur = audio.duration;
-  timeCurrent.textContent = formatTime(ct);
-  if (isFinite(dur)) {
-    timeTotal.textContent = showRemaining ? `-${formatTime(dur - ct)}` : formatTime(dur);
-    seekBar.value = (ct / dur) * 100;
+  if (isMini && isFinite(dur)) {
+    const { start, end } = getTrackBounds();
+    const trackDur = end - start;
+    const trackPos = ct - start;
+    timeCurrent.textContent = formatTime(Math.max(0, trackPos));
+    timeTotal.textContent = showRemaining
+      ? `-${formatTime(Math.max(0, trackDur - trackPos))}`
+      : formatTime(trackDur);
+    seekBar.value = trackDur > 0 ? Math.max(0, Math.min(100, (trackPos / trackDur) * 100)) : 0;
+  } else {
+    timeCurrent.textContent = formatTime(ct);
+    if (isFinite(dur)) {
+      timeTotal.textContent = showRemaining ? `-${formatTime(dur - ct)}` : formatTime(dur);
+      seekBar.value = (ct / dur) * 100;
+    }
   }
   const newIdx = detectCurrentTrack(ct);
   if (newIdx !== state.currentTrackIndex) {
@@ -1349,6 +1698,7 @@ audio.addEventListener('timeupdate', () => {
     highlightTrackInSidebar(state.currentDiscId, newIdx);
     if (!nfoPane.classList.contains('hidden')) { highlightNfo(); highlightTracklist(); }
   }
+  updateTrackProgress();
   // Save play state every ~10 s
   if (!savePlayStateTimer) {
     savePlayStateTimer = setTimeout(() => {
@@ -1386,7 +1736,11 @@ audio.addEventListener('ended', () => {
     audio.play().catch(() => {});
   } else {
     const next = nextTrackIndex(disc, state.currentTrackIndex);
-    if (next >= 0) playDiscAtTrack(disc, next);
+    if (next >= 0) {
+      playDiscAtTrack(disc, next);
+    } else {
+      playAdjacentDisc('next'); // advance to next disc when CUE ends or for raw single files
+    }
   }
 });
 
@@ -1403,35 +1757,79 @@ btnPlay.addEventListener('click', () => {
   else audio.pause();
 });
 
+function playAdjacentDisc(direction) {
+  const discs = state.discs.filter((d) => d.mp3Path || d.blobUrl);
+  const idx = discs.findIndex((d) => d.id === state.currentDiscId);
+  if (idx < 0) return;
+  const target = discs[direction === 'next' ? idx + 1 : idx - 1];
+  if (!target) return;
+  if (target.tracks.length > 0) {
+    playDiscAtTrack(target, direction === 'next' ? 0 : target.tracks.length - 1);
+  } else {
+    loadDisc(target);
+    audio.play().catch(() => {});
+  }
+}
+
 btnPrev.addEventListener('click', () => {
   const disc = currentDisc();
   if (!disc) return;
   const idx = state.currentTrackIndex;
-  if (idx > 0 && audio.currentTime - disc.tracks[idx].startSeconds < 3) playDiscAtTrack(disc, idx - 1);
-  else if (idx >= 0) { const t = disc.tracks[idx].startSeconds; audio.currentTime = t; waveformRenderer.seekTo(t); }
+  if (disc.tracks.length > 0) {
+    if (idx > 0 && audio.currentTime - disc.tracks[idx].startSeconds < 3) {
+      playDiscAtTrack(disc, idx - 1);
+    } else if (idx > 0) {
+      const t = disc.tracks[idx].startSeconds; audio.currentTime = t; waveformRenderer.seekTo(t);
+    } else {
+      playAdjacentDisc('prev'); // already at first track — go to previous disc
+    }
+  } else {
+    // Raw single-file disc — restart if > 3 s in, else go to prev disc
+    if (audio.currentTime > 3) { audio.currentTime = 0; waveformRenderer.seekTo(0); }
+    else playAdjacentDisc('prev');
+  }
 });
 
 btnNext.addEventListener('click', () => {
   const disc = currentDisc();
   if (!disc) return;
-  const next = nextTrackIndex(disc, state.currentTrackIndex);
-  if (next >= 0) playDiscAtTrack(disc, next);
+  if (disc.tracks.length > 0) {
+    const next = nextTrackIndex(disc, state.currentTrackIndex);
+    if (next >= 0) playDiscAtTrack(disc, next);
+    else playAdjacentDisc('next'); // end of CUE disc — go to next disc
+  } else {
+    playAdjacentDisc('next'); // single-file disc — go to next disc
+  }
 });
 
 seekBar.addEventListener('mousedown', () => { state.seeking = true; });
 document.addEventListener('mouseup', () => { state.seeking = false; });
 
-seekBar.addEventListener('input', () => {
-  if (isFinite(audio.duration)) {
-    const t = (seekBar.value / 100) * audio.duration;
-    timeCurrent.textContent = formatTime(t);
-    audio.currentTime = t;
-    waveformRenderer.seekTo(t);
+function seekBarToAbsoluteTime() {
+  if (!isFinite(audio.duration)) return null;
+  if (isMini) {
+    const { start, end } = getTrackBounds();
+    return start + (seekBar.value / 100) * (end - start);
   }
+  return (seekBar.value / 100) * audio.duration;
+}
+
+seekBar.addEventListener('input', () => {
+  const t = seekBarToAbsoluteTime();
+  if (t === null) return;
+  if (isMini) {
+    const { start, end } = getTrackBounds();
+    timeCurrent.textContent = formatTime(Math.max(0, t - start));
+  } else {
+    timeCurrent.textContent = formatTime(t);
+  }
+  audio.currentTime = t;
+  waveformRenderer.seekTo(t);
 });
 
 seekBar.addEventListener('change', () => {
-  if (isFinite(audio.duration)) audio.currentTime = (seekBar.value / 100) * audio.duration;
+  const t = seekBarToAbsoluteTime();
+  if (t !== null) audio.currentTime = t;
   state.seeking = false;
 });
 
@@ -1477,7 +1875,7 @@ btnRepeat.addEventListener('click', cycleRepeat);
 
 // ── Time remaining toggle ──────────────────────────────────────────────────────
 let showRemaining = false;
-timeTotal.style.minWidth = '42px';
+timeTotal.style.minWidth = '68px';
 timeTotal.addEventListener('click', () => {
   showRemaining = !showRemaining;
   timeTotal.style.color = showRemaining ? 'var(--accent)' : '';
@@ -1493,16 +1891,47 @@ filterClear.addEventListener('click', () => { filterInput.value = ''; applyFilte
 // ── Dir load ──────────────────────────────────────────────────────────────────
 function loadRoot(dir) {
   STORAGE.setDir(dir);
-  STORAGE.setScanDir(dir); // reset to root when explicitly loading a new dir
+  STORAGE.setScanDir(''); // clear saved scan dir so we don't auto-load old subfolder
   STORAGE.setFilter('');
   filterInput.value = '';
   musicIndex = null;
-  loadFolderBrowser(dir);
-  scanDirectory(dir);
+  loadFolderBrowser(dir, true); // bust cache — user explicitly requested a refresh
+  // Don't call scanDirectory here: no need to disrupt playback or the disc list
 }
 
 dirLoadBtn.addEventListener('click', () => { const d = dirInput.value.trim(); if (d) loadRoot(d); });
 dirInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const d = dirInput.value.trim(); if (d) loadRoot(d); } });
+
+// ── Library folder dropdown on dir-input focus ────────────────────────────────
+const dirLibDropdown = document.getElementById('dir-library-dropdown');
+
+function showLibraryDropdown() {
+  if (!libraryFolders.length) return;
+  dirLibDropdown.innerHTML = '';
+  for (const folder of libraryFolders) {
+    const name = folder.split('/').filter(Boolean).pop() || folder;
+    const item = document.createElement('div');
+    item.className = 'dir-lib-item';
+    item.innerHTML = `<strong>${escapeHtml(name)}</strong>${escapeHtml(folder)}`;
+    item.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // prevent input blur before click
+      dirLibDropdown.classList.add('hidden');
+      dirInput.value = folder;
+      loadRoot(folder);
+    });
+    dirLibDropdown.appendChild(item);
+  }
+  dirLibDropdown.classList.remove('hidden');
+}
+
+dirInput.addEventListener('focus', async () => {
+  await loadLibrary();
+  showLibraryDropdown();
+});
+dirInput.addEventListener('blur', () => {
+  // Delay so mousedown on an item fires first
+  setTimeout(() => dirLibDropdown.classList.add('hidden'), 150);
+});
 
 // ── Directory browser modal ───────────────────────────────────────────────────
 const dirModal        = document.getElementById('dir-modal-overlay');
@@ -1786,6 +2215,32 @@ settingsOverlay.addEventListener('click', (e) => {
   }
 });
 
+// ── Reindex button ────────────────────────────────────────────────────────────
+const reindexBtn    = document.getElementById('reindex-btn');
+const reindexStatus = document.getElementById('reindex-status');
+
+if (reindexBtn) {
+  reindexBtn.addEventListener('click', async () => {
+    reindexBtn.disabled = true;
+    reindexStatus.textContent = 'Rebuilding…';
+    musicIndex = null;
+    // Bust server caches for library folders + currently loaded root
+    try {
+      const currentRoot = STORAGE.getDir();
+      const rootsToBust = [...new Set([...libraryFolders, currentRoot].filter(Boolean))];
+      await Promise.all([
+        libraryFolders.length ? fetch('/api/library-index?bust=1') : null,
+        ...rootsToBust.map((r) => fetch(`/api/index?root=${encodeURIComponent(r)}&bust=1`)),
+      ].filter(Boolean));
+      reindexStatus.textContent = 'Done — open search to use new index.';
+    } catch (_) {
+      reindexStatus.textContent = 'Failed — check console.';
+    } finally {
+      reindexBtn.disabled = false;
+    }
+  });
+}
+
 // ── Spotify settings handlers ─────────────────────────────────────────────────
 const spotifySaveCredsBtn      = document.getElementById('spotify-save-creds-btn');
 const spotifyConnectSettingsBtn = document.getElementById('spotify-connect-settings-btn');
@@ -1849,7 +2304,18 @@ function setMiniPlayer(mini) {
   document.body.classList.toggle('mini', mini);
   miniBtn.title     = mini ? 'Full player' : 'Mini player';
   miniBtn.innerHTML = mini ? '&#x229E;' : '&#x2296;'; // ⊞ restore / ⊖ mini
-  if (mini) updateMiniInfo();
+  if (mini) {
+    updateMiniInfo();
+  } else {
+    // Restore full-file seek bar when leaving mini mode
+    const ct = audio.currentTime;
+    const dur = audio.duration;
+    if (isFinite(dur)) {
+      seekBar.value = (ct / dur) * 100;
+      timeCurrent.textContent = formatTime(ct);
+      timeTotal.textContent = showRemaining ? `-${formatTime(dur - ct)}` : formatTime(dur);
+    }
+  }
   if (window.electronAPI) window.electronAPI.setMiniPlayer(mini);
 }
 
@@ -2056,6 +2522,164 @@ function initWaveformResize() {
   });
 }
 
+// ── Online tracklist finder (MixesDB) ────────────────────────────────────────
+const tlModalOverlay = document.getElementById('tl-modal-overlay');
+const tlQueryInput   = document.getElementById('tl-query-input');
+const tlSearchGo     = document.getElementById('tl-search-go');
+const tlResults      = document.getElementById('tl-results');
+const tlTracksPane   = document.getElementById('tl-tracks-pane');
+const tlTracksList   = document.getElementById('tl-tracks-list');
+const tlTracksTitle  = document.getElementById('tl-tracks-title');
+const tlApplyBtn     = document.getElementById('tl-apply-btn');
+const tlSourceLink   = document.getElementById('tl-source-link');
+const tlBackBtn      = document.getElementById('tl-back-btn');
+
+let tlTargetDisc   = null;
+let tlStagedTracks = null;
+
+// Derive a clean search query from folder name (strips release-group tags, dates)
+function extractTlQuery(disc) {
+  const folder = disc.mp3Path
+    ? disc.mp3Path.replace(/\/[^/]+$/, '').split('/').pop()
+    : disc.albumTitle || '';
+  let q = folder.replace(/[_]/g, ' ').replace(/-/g, ' ');
+  // Remove all-caps tokens (SAT, MOD, QMI, REPACK, etc.) but keep mixed-case words
+  q = q.replace(/\b[A-Z]{2,10}\b/g, '');
+  // Remove standalone day/month numbers (not 4-digit years)
+  q = q.replace(/\b(?!\d{4}\b)\d{1,2}\b/g, '');
+  return q.replace(/\s+/g, ' ').trim();
+}
+
+function openTlFinder(disc) {
+  tlTargetDisc   = disc;
+  tlStagedTracks = null;
+  tlModalOverlay.classList.add('active');
+  tlQueryInput.value = extractTlQuery(disc);
+  tlResults.innerHTML = '';
+  tlResults.classList.remove('hidden');
+  tlTracksPane.classList.add('hidden');
+  tlQueryInput.focus();
+  tlQueryInput.select();
+  if (tlQueryInput.value.length > 3) runTlSearch(tlQueryInput.value);
+}
+
+function closeTlFinder() {
+  tlModalOverlay.classList.remove('active');
+  tlTargetDisc   = null;
+  tlStagedTracks = null;
+}
+
+async function runTlSearch(query) {
+  tlResults.innerHTML = '<div class="tl-msg">Searching MixesDB…</div>';
+  tlResults.classList.remove('hidden');
+  tlTracksPane.classList.add('hidden');
+  try {
+    const res = await fetch(`/api/tracklist-search?q=${encodeURIComponent(query)}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || res.statusText);
+    }
+    const { results } = await res.json();
+    if (!results.length) {
+      tlResults.innerHTML = '<div class="tl-msg">No results — try different search terms.</div>';
+      return;
+    }
+    tlResults.innerHTML = results.map((r) =>
+      `<div class="tl-result-item" data-url="${escapeHtml(r.url)}">
+        <span class="tl-result-title">${escapeHtml(r.title)}</span>
+        <span class="tl-result-arrow">&#x203A;</span>
+      </div>`
+    ).join('');
+    tlResults.querySelectorAll('.tl-result-item').forEach((el) => {
+      el.addEventListener('click', () =>
+        showTlTracks(el.dataset.url, el.querySelector('.tl-result-title').textContent)
+      );
+    });
+  } catch (e) {
+    tlResults.innerHTML = `<div class="tl-msg">Search failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function showTlTracks(url, title) {
+  tlTracksPane.classList.remove('hidden');
+  tlResults.classList.add('hidden');
+  tlTracksTitle.textContent = title;
+  tlTracksList.innerHTML = '<div class="tl-msg">Loading…</div>';
+  tlSourceLink.href = url;
+  tlStagedTracks = null;
+  tlApplyBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/tracklist-fetch?url=${encodeURIComponent(url)}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || res.statusText);
+    }
+    const data = await res.json();
+    if (!data.tracks.length) {
+      tlTracksList.innerHTML = '<div class="tl-msg">No timed tracks found on this page.</div>';
+      return;
+    }
+    tlStagedTracks = data.tracks;
+    tlApplyBtn.disabled = false;
+    const noTimes = !data.hasTimes;
+    if (noTimes) {
+      tlTracksList.innerHTML = '<div class="tl-msg" style="padding:6px 16px;font-size:11px;text-align:left;">No timecodes — track order only, no seek points.</div>';
+    }
+    tlTracksList.innerHTML += data.tracks.map((t, i) => {
+      let timeLabel = '';
+      if (t.startSeconds !== null) {
+        const mm = Math.floor(t.startSeconds / 60);
+        const ss = String(t.startSeconds % 60).padStart(2, '0');
+        timeLabel = `${mm}:${ss}`;
+      } else {
+        timeLabel = String(i + 1).padStart(2, '0');
+      }
+      const label = t.performer ? `${t.performer} - ${t.title}` : t.title;
+      return `<div class="tl-track-item">
+        <span class="tl-track-time">${timeLabel}</span>
+        <span class="tl-track-name">${escapeHtml(label)}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    tlTracksList.innerHTML = `<div class="tl-msg">Failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function applyScrapedTracklist() {
+  if (!tlTargetDisc || !tlStagedTracks || !tlStagedTracks.length) return;
+  const disc = tlTargetDisc;
+  const hasTimes = tlStagedTracks.some((t) => t.startSeconds !== null);
+  disc.tracks = tlStagedTracks.map((t, i) => ({
+    ...t,
+    track: i + 1,
+    startSeconds: hasTimes ? (t.startSeconds ?? 0) : 0,
+  }));
+  try { localStorage.setItem(`tlp_tl_${disc.mp3Path}`, JSON.stringify(disc.tracks)); } catch (_) {}
+  renderDiscList();
+  loadDisc(disc);
+  closeTlFinder();
+}
+
+// Called before rendering a disc: injects a previously saved scraped tracklist if disc has none
+function loadScrapedTracklist(disc) {
+  if (!disc.mp3Path || disc.tracks.length) return;
+  try {
+    const stored = localStorage.getItem(`tlp_tl_${disc.mp3Path}`);
+    if (stored) disc.tracks = JSON.parse(stored);
+  } catch (_) {}
+}
+
+tlBtn.addEventListener('click', () => { const d = currentDisc(); if (d) openTlFinder(d); });
+tlModalOverlay.addEventListener('click', (e) => { if (e.target === tlModalOverlay) closeTlFinder(); });
+document.getElementById('tl-modal-close').addEventListener('click', closeTlFinder);
+tlSearchGo.addEventListener('click', () => runTlSearch(tlQueryInput.value));
+tlQueryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runTlSearch(tlQueryInput.value); });
+tlBackBtn.addEventListener('click', () => {
+  tlTracksPane.classList.add('hidden');
+  tlResults.classList.remove('hidden');
+});
+tlApplyBtn.addEventListener('click', applyScrapedTracklist);
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   loadFavorites();
@@ -2097,36 +2721,105 @@ async function init() {
   // Init Spotify integration
   initSpotify().catch(() => {});
 
-  // Restore last dir + scan position + filter
+  // Restore last dir + scan position + filter — fetch config and library in parallel
   try {
-    const res = await fetch('/api/config');
-    const config = await res.json();
+    const [configRes] = await Promise.all([
+      fetch('/api/config'),
+      loadLibrary(),          // already called above but no-ops if cached
+    ]);
+    const config = await configRes.json();
     const dir = config.dir || STORAGE.getDir();
     if (dir) {
       STORAGE.setDir(dir);
       dirInput.value = dir;
       musicIndex = null;
 
-      // Restore filter text
       const savedFilter = STORAGE.getFilter();
       if (savedFilter) filterInput.value = savedFilter;
 
-      // Load folder browser, then mark active subfolder
       const scanDir = STORAGE.getScanDir() || dir;
-      await loadFolderBrowser(dir);
-      if (savedFilter) applyFilter(savedFilter);
-      // Highlight the active subfolder item in the browser
-      if (scanDir !== dir) {
-        const activeItem = folderBrowser.querySelector(`.folder-item[data-name="${CSS.escape(scanDir.split('/').pop())}"]`);
-        if (activeItem) activeItem.classList.add('active');
-      }
 
-      await scanDirectory(scanDir);
+      // Load folder browser and scan the disc directory in parallel
+      await Promise.all([
+        loadFolderBrowser(dir).then(() => {
+          if (savedFilter) applyFilter(savedFilter);
+          if (scanDir !== dir) {
+            const activeItem = folderBrowser.querySelector(`.folder-item[data-name="${CSS.escape(scanDir.split('/').pop())}"]`);
+            if (activeItem) activeItem.classList.add('active');
+          }
+        }),
+        scanDirectory(scanDir),
+      ]);
     }
   } catch (_) {
     const dir = STORAGE.getDir();
     if (dir) { dirInput.value = dir; loadRoot(dir); }
   }
+}
+
+// ── Drag-and-drop MP3 playback ────────────────────────────────────────────────
+const dropOverlay = document.getElementById('drop-overlay');
+let dragEnterCount = 0;
+
+document.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  dragEnterCount++;
+  dropOverlay.classList.add('active');
+});
+
+document.addEventListener('dragleave', () => {
+  dragEnterCount = Math.max(0, dragEnterCount - 1);
+  if (dragEnterCount === 0) dropOverlay.classList.remove('active');
+});
+
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+});
+
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragEnterCount = 0;
+  dropOverlay.classList.remove('active');
+
+  const mp3s = [...(e.dataTransfer?.files || [])].filter((f) =>
+    f.name.toLowerCase().endsWith('.mp3')
+  );
+  if (mp3s.length) loadDroppedFiles(mp3s);
+});
+
+function loadDroppedFiles(files) {
+  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name));
+  const DROP_ID_BASE = 90000;
+
+  // Revoke any previous blob URLs to free memory
+  state.discs.forEach((d) => { if (d.blobUrl) URL.revokeObjectURL(d.blobUrl); });
+
+  const newDiscs = sorted.map((file, i) => {
+    // Electron provides file.path; browsers don't
+    const absPath = file.path || null;
+    return {
+      id: DROP_ID_BASE + i,
+      mp3Path: absPath,
+      mp3File: file.name,
+      blobUrl: absPath ? null : URL.createObjectURL(file),
+      cueFile: null,
+      albumTitle: file.name.replace(/\.mp3$/i, ''),
+      albumPerformer: '',
+      tracks: [],
+    };
+  });
+
+  state.discs = newDiscs;
+  renderDiscList();
+
+  const first = newDiscs[0];
+  if (!first) return;
+  loadDisc(first);
+  audio.addEventListener('canplay', function p() {
+    audio.removeEventListener('canplay', p);
+    audio.play().catch(() => {});
+  });
 }
 
 init();

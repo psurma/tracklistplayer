@@ -14,6 +14,54 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── Library (multi-root folder collection) ────────────────────────────────────
+const TLP_DIR = path.join(os.homedir(), '.tracklistplayer');
+const LIBRARY_FILE = path.join(TLP_DIR, 'library.json');
+
+function readLibrary() {
+  try { return JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8')); }
+  catch (_) { return []; }
+}
+
+function writeLibrary(folders) {
+  try { fs.mkdirSync(TLP_DIR, { recursive: true }); } catch (_) {}
+  fs.writeFileSync(LIBRARY_FILE, JSON.stringify(folders));
+}
+
+let libraryIndexCache = null;
+
+app.get('/api/library', (_req, res) => res.json({ folders: readLibrary() }));
+
+app.post('/api/library', (req, res) => {
+  const { folder } = req.body || {};
+  if (!folder) return res.status(400).json({ error: 'folder required' });
+  const lib = readLibrary();
+  if (!lib.includes(folder)) { lib.push(folder); writeLibrary(lib); }
+  libraryIndexCache = null;
+  res.json({ folders: lib });
+});
+
+app.delete('/api/library', (req, res) => {
+  const { folder } = req.body || {};
+  const lib = readLibrary().filter((f) => f !== folder);
+  writeLibrary(lib);
+  libraryIndexCache = null;
+  res.json({ folders: lib });
+});
+
+app.get('/api/library-index', async (req, res) => {
+  if (!req.query.bust && libraryIndexCache) return res.json(libraryIndexCache);
+  const folders = readLibrary();
+  if (!folders.length) return res.json([]);
+  try {
+    const results = await Promise.all(folders.map((f) => buildMusicIndex(f)));
+    libraryIndexCache = results.flat();
+    res.json(libraryIndexCache);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Spotify OAuth helpers ─────────────────────────────────────────────────────
 const SPOTIFY_CONFIG_PATH = path.join(os.homedir(), '.tracklistplayer', 'spotify.json');
 const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:3123/auth/spotify/callback';
@@ -218,13 +266,15 @@ app.get('/api/spotify/disconnect', async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /api/scan?dir=<absolute path>
-// Scans the given dir + one level of subdirs for MP3/CUE pairs
+// GET /api/scan?dir=<absolute path>&bust=1
+// Scans the given dir + one level of subdirs for MP3/CUE pairs.
+// Results are cached in memory; pass bust=1 to force a fresh scan.
 app.get('/api/scan', async (req, res) => {
   const dir = req.query.dir;
   if (!dir) {
     return res.status(400).json({ error: 'dir query parameter required' });
   }
+  if (!req.query.bust && scanCache.has(dir)) return res.json(scanCache.get(dir));
 
   try {
     await fs.promises.access(dir);
@@ -238,7 +288,7 @@ app.get('/api/scan', async (req, res) => {
 
   try {
     const pairs = await findCueMp3Pairs(dir);
-    const result = pairs.map((pair, index) => ({
+    const discs = pairs.map((pair, index) => ({
       id: index,
       mp3Path: pair.mp3File || null,
       mp3File: pair.mp3File ? path.basename(pair.mp3File) : null,
@@ -247,36 +297,93 @@ app.get('/api/scan', async (req, res) => {
       albumPerformer: pair.albumPerformer,
       tracks: pair.tracks,
     }));
-    return res.json({ dir, discs: result });
+    const result = { dir, discs };
+    scanCache.set(dir, result);
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/ls?dir=<path> — list subdirectories with name + mtime for sorting
+// Session-scoped caches for directory listings and scans
+const lsCache   = new Map();
+const scanCache = new Map();
+
+const AUDIO_EXTS = new Set(['.mp3', '.cue', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus', '.wma']);
+
+async function hasMusic(dirPath) {
+  try {
+    const files = await fs.promises.readdir(dirPath);
+    return files.some((f) => AUDIO_EXTS.has(f.slice(f.lastIndexOf('.')).toLowerCase()));
+  } catch (_) {
+    return false;
+  }
+}
+
+// GET /api/ls?dir=<path>&bust=1
+// Returns cached JSON instantly if available; otherwise falls through to SSE stream.
 app.get('/api/ls', async (req, res) => {
   const dir = req.query.dir;
   if (!dir) return res.status(400).json({ error: 'dir required' });
+  if (!req.query.bust && lsCache.has(dir)) return res.json(lsCache.get(dir));
+  return res.status(204).end(); // not cached — client should use /api/ls-stream
+});
+
+// GET /api/ls-stream?dir=<path>  — SSE: streams one entry per subdirectory as soon
+// as its hasMusic check resolves; the client inserts items in sorted order live.
+// When the cache is already warm the whole batch is sent in a single 'batch' event.
+app.get('/api/ls-stream', async (req, res) => {
+  const dir = req.query.dir;
+  if (!dir) { res.status(400).end(); return; }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+  // Fast path — already cached
+  if (!req.query.bust && lsCache.has(dir)) {
+    send({ type: 'batch', ...lsCache.get(dir) });
+    res.end();
+    return;
+  }
+
+  const parent = path.dirname(dir) !== dir ? path.dirname(dir) : null;
+  send({ type: 'meta', parent });
 
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    const subdirs = await Promise.all(
-      entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-        .map(async (e) => {
-          try {
-            const st = await fs.promises.stat(path.join(dir, e.name));
-            return { name: e.name, mtime: st.mtimeMs };
-          } catch (_) {
-            return { name: e.name, mtime: 0 };
-          }
-        })
-    );
-    const parent = path.dirname(dir) !== dir ? path.dirname(dir) : null;
-    return res.json({ dir, parent, subdirs });
+    const candidates = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
+    const collected = [];
+
+    // Limit concurrent hasMusic checks so network-drive I/O isn't saturated,
+    // keeping bandwidth free for simultaneous /api/scan requests.
+    const LIMIT = 8;
+    let ci = 0;
+    async function worker() {
+      while (ci < candidates.length) {
+        const e = candidates[ci++];
+        const subPath = path.join(dir, e.name);
+        const [music, st] = await Promise.all([
+          hasMusic(subPath),
+          fs.promises.stat(subPath).catch(() => null),
+        ]);
+        if (!music) continue;
+        const entry = { name: e.name, mtime: st ? st.mtimeMs : 0 };
+        collected.push(entry);
+        send({ type: 'entry', ...entry });
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(LIMIT, candidates.length) }, worker));
+
+    lsCache.set(dir, { dir, parent, subdirs: collected });
+    send({ type: 'done' });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    send({ type: 'error', message: err.message });
   }
+  res.end();
 });
 
 // GET /api/nfo?dir=<path> — find and return NFO file in dir, decoded from CP437
@@ -546,14 +653,14 @@ app.get('/api/sync-test', (req, res) => {
 const indexCache = new Map();
 
 // Recursively scan rootDir (BFS, max depth 5) and build a flat array of disc records
-async function buildMusicIndex(rootDir) {
+// Core scanner — calls onEntry(entry) for each album found, returns full list when done
+async function buildMusicIndexStreaming(rootDir, onEntry) {
   const yearRe = /\b(19\d{2}|20[012]\d)\b/;
   const results = [];
   const visited = new Set();
   const queue = [{ dir: rootDir, depth: 0 }];
 
   while (queue.length > 0) {
-    // Process up to 20 dirs concurrently
     const batch = queue.splice(0, 20);
     await Promise.all(batch.map(async ({ dir, depth }) => {
       if (visited.has(dir)) return;
@@ -564,15 +671,23 @@ async function buildMusicIndex(rootDir) {
         const yearMatch = path.basename(dir).match(yearRe);
         const year = yearMatch ? yearMatch[1] : '';
         for (const pair of pairs) {
-          results.push({
+          const tracks = pair.tracks.map((t, i) => {
+            const next = pair.tracks[i + 1];
+            return next
+              ? { ...t, durationSeconds: Math.round(next.startSeconds - t.startSeconds) }
+              : t;
+          });
+          const entry = {
             dir,
             mp3Path: pair.mp3File || null,
             mp3File: pair.mp3File ? path.basename(pair.mp3File) : null,
             albumTitle: pair.albumTitle,
             albumPerformer: pair.albumPerformer,
             year,
-            tracks: pair.tracks,
-          });
+            tracks,
+          };
+          results.push(entry);
+          await onEntry(entry);
         }
       } else if (depth < 5) {
         try {
@@ -589,12 +704,18 @@ async function buildMusicIndex(rootDir) {
   return results;
 }
 
+async function buildMusicIndex(rootDir) {
+  const results = [];
+  await buildMusicIndexStreaming(rootDir, async (e) => results.push(e));
+  return results;
+}
+
 // GET /api/index?root=<path> — full recursive index of music root
 app.get('/api/index', async (req, res) => {
   const root = req.query.root;
   if (!root) return res.status(400).json({ error: 'root required' });
 
-  if (indexCache.has(root)) return res.json(indexCache.get(root));
+  if (!req.query.bust && indexCache.has(root)) return res.json(indexCache.get(root));
 
   try { await fs.promises.access(root); }
   catch (_) { return res.status(404).json({ error: 'Directory not found' }); }
@@ -606,6 +727,47 @@ app.get('/api/index', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/index-stream?root=<path> — SSE stream of index entries as they are found
+app.get('/api/index-stream', async (req, res) => {
+  const root = req.query.root;
+  if (!root) return res.status(400).json({ error: 'root required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // If already cached, flush immediately
+  if (!req.query.bust && indexCache.has(root)) {
+    for (const entry of indexCache.get(root)) {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    }
+    res.write('data: {"done":true}\n\n');
+    res.end();
+    return;
+  }
+
+  try { await fs.promises.access(root); }
+  catch (_) {
+    res.write('data: {"done":true,"error":"Directory not found"}\n\n');
+    res.end();
+    return;
+  }
+
+  const results = [];
+  try {
+    await buildMusicIndexStreaming(root, async (entry) => {
+      if (!res.writableEnded) res.write(`data: ${JSON.stringify(entry)}\n\n`);
+      results.push(entry);
+    });
+    indexCache.set(root, results);
+  } catch (err) {
+    if (!res.writableEnded) res.write(`data: {"done":true,"error":${JSON.stringify(err.message)}}\n\n`);
+    res.end();
+    return;
+  }
+  if (!res.writableEnded) { res.write('data: {"done":true}\n\n'); res.end(); }
 });
 
 // Artwork cache (keyed by absolute mp3 path)
@@ -703,12 +865,20 @@ app.get('/api/artwork', async (req, res) => {
   res.status(404).end();
 });
 
-// GET /api/reveal?path=<absolute path> — reveal file/folder in Finder (macOS)
+// GET /api/reveal?path=<absolute path> — reveal file in the OS file manager
 app.get('/api/reveal', (req, res) => {
   const target = req.query.path;
   if (!target) return res.status(400).json({ error: 'path required' });
   const { spawn } = require('child_process');
-  spawn('open', ['-R', target], { detached: true }).unref();
+  const plat = process.platform;
+  if (plat === 'darwin') {
+    spawn('open', ['-R', target], { detached: true }).unref();
+  } else if (plat === 'win32') {
+    spawn('explorer', [`/select,${target}`], { detached: true }).unref();
+  } else {
+    // Linux: open the parent directory
+    spawn('xdg-open', [path.dirname(target)], { detached: true }).unref();
+  }
   res.json({ ok: true });
 });
 
@@ -727,8 +897,12 @@ app.get('/file', (req, res) => {
   const fileSize = stat.size;
   const range = req.headers.range;
 
+  const MIME = { '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
+    '.opus': 'audio/ogg; codecs=opus', '.wma': 'audio/x-ms-wma' };
+  const ext = path.extname(filePath).toLowerCase();
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Content-Type', MIME[ext] || 'audio/mpeg');
 
   if (range) {
     const parts = range.replace(/bytes=/, '').split('-');
@@ -763,6 +937,104 @@ const server = app.listen(PORT, () => {
 // Pass CLI dir to frontend via a small API endpoint
 app.get('/api/config', (req, res) => {
   res.json({ dir: cliDir || '' });
+});
+
+// ── Online tracklist scraping (MixesDB) ───────────────────────────────────────
+const TL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+function stripTags(str) {
+  return str
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+// Search MixesDB for DJ mix tracklists matching a query
+app.get('/api/tracklist-search', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'q required' });
+  const url = `https://www.mixesdb.com/w/index.php?title=Special%3ASearch&search=${encodeURIComponent(q)}&fulltext=1&limit=20`;
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': TL_UA } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const html = await r.text();
+
+    // Limit to the search results list to avoid nav/sidebar/language links
+    const sectionMatch = html.match(/class="mw-search-results"[\s\S]*?<\/ul>/);
+    const section = sectionMatch ? sectionMatch[0] : '';
+    if (!section) { res.json({ results: [] }); return; }
+
+    const results = [];
+    // Each result heading: mw-search-result-heading"><a href="/w/..." title="...">
+    const re = /mw-search-result-heading[\s\S]{1,400}?href="(\/w\/[^"?#:]+)"[^>]*title="([^"]+)"/g;
+    let m;
+    while ((m = re.exec(section)) !== null) {
+      results.push({ title: m[2], url: 'https://www.mixesdb.com' + m[1] });
+    }
+    const seen = new Set();
+    const deduped = results.filter((r) => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
+    res.json({ results: deduped.slice(0, 20) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch and parse a MixesDB tracklist page
+app.get('/api/tracklist-fetch', async (req, res) => {
+  const url = (req.query.url || '').trim();
+  if (!url.startsWith('https://www.mixesdb.com/w/')) {
+    return res.status(400).json({ error: 'invalid url' });
+  }
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': TL_UA } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const html = await r.text();
+
+    // Extract the main content area (stop before "Related mixes" and "Comments")
+    const contentMatch = html.match(/id="mw-content-text"([\s\S]*?)(?:id="relatedPages"|id="comments"|<\/div>\s*<div id="bodyBottom)/);
+    const content = contentMatch ? contentMatch[1] : html;
+
+    // Find the first <ol> in the content (the tracklist)
+    const olMatch = content.match(/<ol>([\s\S]*?)<\/ol>/);
+    const tracks = [];
+    if (olMatch) {
+      const liRe = /<li>([\s\S]*?)<\/li>/g;
+      let m;
+      while ((m = liRe.exec(olMatch[1])) !== null) {
+        const text = stripTags(m[1]).trim();
+        if (!text) continue;
+        // Some pages include [MMM] minute timecodes; most don't
+        const timedMatch = text.match(/^\[(\d+)\]\s+(.+)$/);
+        if (timedMatch) {
+          const rest = timedMatch[2].trim();
+          const dash = rest.indexOf(' - ');
+          tracks.push({
+            startSeconds: parseInt(timedMatch[1], 10) * 60,
+            performer: dash > 0 ? rest.slice(0, dash).trim() : '',
+            title: dash > 0 ? rest.slice(dash + 3).trim() : rest,
+          });
+        } else {
+          const dash = text.indexOf(' - ');
+          tracks.push({
+            startSeconds: null, // no timecode on this page
+            performer: dash > 0 ? text.slice(0, dash).trim() : '',
+            title: dash > 0 ? text.slice(dash + 3).trim() : text,
+          });
+        }
+      }
+    }
+
+    const titleM = html.match(/<h1[^>]*id="firstHeading"[^>]*>([\s\S]*?)<\/h1>/);
+    const pageTitle = titleM ? stripTags(titleM[1]) : url.split('/w/')[1]?.replace(/_/g, ' ') || '';
+    const hasTimes = tracks.some((t) => t.startSeconds !== null);
+    res.json({ title: pageTitle, tracks, hasTimes, sourceUrl: url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = server;
