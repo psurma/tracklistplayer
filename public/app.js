@@ -1375,6 +1375,7 @@ let spotifyConnected = false;
 let spotifyAccessToken = null;
 let spotifyTokenExpiry = 0;
 let spotifyPollTimer = null;
+let spotifyWasPlaying = false; // tracks previous paused state for end-of-track detection
 let likedSongsOffset = 0;
 let likedSongsTotal = 0;
 let likedSongsLoading = false;
@@ -1411,19 +1412,24 @@ function initSpotifySDK(token) {
   });
   spotifyPlayer.addListener('player_state_changed', (playerState) => {
     if (!playerState) return;
-    // Update now-playing if a Spotify track is active
     const item = playerState.track_window && playerState.track_window.current_track;
-    if (item) {
-      const isPaused = playerState.paused;
-      // Mark which spotify track item is active
-      spotifyLikedList.querySelectorAll('.spotify-track-item').forEach((el) => {
-        el.classList.toggle('spotify-track-active', el.dataset.uri === item.uri);
-      });
-      if (!isPaused) {
-        btnPlay.innerHTML = '&#9646;&#9646;';
-      } else {
-        btnPlay.innerHTML = '&#9654;';
-      }
+    if (!item) return;
+
+    const justEnded = spotifyWasPlaying && playerState.paused && playerState.position === 0;
+    spotifyWasPlaying = !playerState.paused;
+
+    // Mark which track is active in the liked songs list
+    spotifyLikedList.querySelectorAll('.spotify-track-item').forEach((el) => {
+      el.classList.toggle('spotify-track-active', el.dataset.uri === item.uri);
+    });
+    btnPlay.innerHTML = playerState.paused ? '&#9654;' : '&#9646;&#9646;';
+
+    // Auto-advance to the next track when the current one finishes
+    if (justEnded) {
+      const items = [...spotifyLikedList.querySelectorAll('.spotify-track-item')];
+      const idx = items.findIndex((el) => el.dataset.uri === item.uri);
+      const next = items[idx + 1];
+      if (next) playSpotifyTrack(next.dataset.uri);
     }
   });
   spotifyPlayer.addListener('initialization_error', ({ message }) => {
@@ -1762,6 +1768,15 @@ audio.addEventListener('pause', () => {
     STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
   }
 });
+// Pause Spotify whenever local audio starts, so both can't play simultaneously
+audio.addEventListener('play', () => {
+  if (spotifyPlayer) {
+    spotifyPlayer.getCurrentState().then((s) => {
+      if (s && !s.paused) spotifyPlayer.pause().catch(() => {});
+    }).catch(() => {});
+  }
+});
+
 audio.addEventListener('ended', () => {
   btnPlay.innerHTML = '&#9654;';
   const disc = currentDisc();

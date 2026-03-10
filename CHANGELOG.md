@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.13.1] - 2026-03-10
+
+### Fixed
+- Spotify and local audio are now mutually exclusive: starting local playback pauses the Spotify player, and starting a Spotify track pauses local audio (was already the case; now the reverse is also handled via an `audio 'play'` event listener)
+- Spotify liked songs now auto-advance: when a track finishes naturally (position resets to 0 while paused), the next track in the visible list plays automatically
+
 ## [1.13.0] - 2026-03-09
 
 ### Added
