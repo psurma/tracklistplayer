@@ -241,6 +241,47 @@ app.get('/api/spotify/liked', async (req, res) => {
   }
 });
 
+// GET /api/spotify/playlists — list user's playlists
+app.get('/api/spotify/playlists', async (req, res) => {
+  let config = await readSpotifyConfig();
+  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
+  if (config.expires_at && Date.now() > config.expires_at - 60000) {
+    try { config = await refreshSpotifyToken(config); } catch (_) {}
+  }
+  try {
+    const r = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+      headers: { 'Authorization': `Bearer ${config.access_token}` },
+    });
+    if (!r.ok) return res.status(r.status).json({ error: 'Spotify API error' });
+    res.json(await r.json());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/spotify/playlist-tracks?id=&offset=&limit=
+app.get('/api/spotify/playlist-tracks', async (req, res) => {
+  const id = req.query.id;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  let config = await readSpotifyConfig();
+  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
+  if (config.expires_at && Date.now() > config.expires_at - 60000) {
+    try { config = await refreshSpotifyToken(config); } catch (_) {}
+  }
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  try {
+    const r = await fetch(
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(id)}/tracks?offset=${offset}&limit=${limit}`,
+      { headers: { 'Authorization': `Bearer ${config.access_token}` } }
+    );
+    if (!r.ok) return res.status(r.status).json({ error: 'Spotify API error' });
+    res.json(await r.json());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/spotify/devices — list available Spotify Connect devices
 app.get('/api/spotify/devices', async (req, res) => {
   let config = await readSpotifyConfig();

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.14.0] - 2026-03-10
+
+### Changed
+- Refactored Spotify integration from a full-screen overlay into the existing app chrome
+- Left sidebar now shows a `#spotify-browser` panel (replaces the folder browser) when Spotify mode is active, listing the user's playlists and a "Liked Songs" item at the top
+- Spotify tracks are now shown in a new SPOTIFY tab in the right NFO pane instead of the old `#panel-spotify` overlay
+- Added two new server endpoints: `GET /api/spotify/playlists` and `GET /api/spotify/playlist-tracks?id=`
+- Clicking any playlist or Liked Songs loads its tracks into the SPOTIFY tab with a Load More button for pagination
+- Removed the `#panel-spotify` overlay entirely
+
 ## [1.13.1] - 2026-03-10
 
 ### Fixed

@@ -468,6 +468,7 @@ function switchInfoTab(tab) {
   nfoTabNfo.classList.toggle('hidden', tab !== 'nfo');
   nfoTabTracklist.classList.toggle('hidden', tab !== 'tracklist');
   nfoTabDetect.classList.toggle('hidden', tab !== 'detect');
+  nfoTabSpotify.classList.toggle('hidden', tab !== 'spotify');
 }
 
 document.getElementById('nfo-tabs').addEventListener('click', (e) => {
@@ -1376,16 +1377,23 @@ let spotifyAccessToken = null;
 let spotifyTokenExpiry = 0;
 let spotifyPollTimer = null;
 let spotifyWasPlaying = false; // tracks previous paused state for end-of-track detection
-let likedSongsOffset = 0;
-let likedSongsTotal = 0;
-let likedSongsLoading = false;
+let spotifyMode = false;
+let spotifyActiveSource   = null; // { type:'liked' } | { type:'playlist', id, name }
+let spotifyTracksOffset   = 0;
+let spotifyTracksTotal    = 0;
+let spotifyTracksLoading  = false;
 
-const spotifyPanel      = document.getElementById('panel-spotify');
-const spotifyConnectPrompt = document.getElementById('spotify-connect-prompt');
-const spotifyLikedList  = document.getElementById('spotify-liked-list');
-const spotifyCount      = document.getElementById('spotify-count');
-const spotifyClose      = document.getElementById('spotify-close');
-const spotifyConnectBtnPanel = document.getElementById('spotify-connect-btn-panel');
+const spotifyBrowser           = document.getElementById('spotify-browser');
+const spotifyBrowserPrompt     = document.getElementById('spotify-browser-prompt');
+const spotifyBrowserConnectBtn = document.getElementById('spotify-browser-connect-btn');
+const spotifyPlaylistList      = document.getElementById('spotify-playlist-list');
+const nfoTabSpotifyBtn         = document.getElementById('nfo-tab-spotify-btn');
+const nfoTabSpotify            = document.getElementById('nfo-tab-spotify');
+const spotifySourceName        = document.getElementById('spotify-source-name');
+const spotifySourceCount       = document.getElementById('spotify-source-count');
+const spotifyTracksList        = document.getElementById('spotify-tracks-list');
+const spotifyTracksFooter      = document.getElementById('spotify-tracks-footer');
+const spotifyTracksLoadMoreBtn = document.getElementById('spotify-tracks-load-more-btn');
 
 async function getSpotifyToken() {
   if (spotifyAccessToken && Date.now() < spotifyTokenExpiry - 60000) return spotifyAccessToken;
@@ -1418,15 +1426,15 @@ function initSpotifySDK(token) {
     const justEnded = spotifyWasPlaying && playerState.paused && playerState.position === 0;
     spotifyWasPlaying = !playerState.paused;
 
-    // Mark which track is active in the liked songs list
-    spotifyLikedList.querySelectorAll('.spotify-track-item').forEach((el) => {
+    // Mark which track is active in the tracks list
+    spotifyTracksList.querySelectorAll('.spotify-track-item').forEach((el) => {
       el.classList.toggle('spotify-track-active', el.dataset.uri === item.uri);
     });
     btnPlay.innerHTML = playerState.paused ? '&#9654;' : '&#9646;&#9646;';
 
     // Auto-advance to the next track when the current one finishes
     if (justEnded) {
-      const items = [...spotifyLikedList.querySelectorAll('.spotify-track-item')];
+      const items = [...spotifyTracksList.querySelectorAll('.spotify-track-item')];
       const idx = items.findIndex((el) => el.dataset.uri === item.uri);
       const next = items[idx + 1];
       if (next) playSpotifyTrack(next.dataset.uri);
@@ -1445,16 +1453,153 @@ function initSpotifySDK(token) {
 }
 
 function updateSpotifyUI() {
-  if (spotifyConnected) {
-    spotifyConnectPrompt.classList.add('hidden');
-    spotifyLikedList.classList.remove('hidden');
-  } else {
-    spotifyConnectPrompt.classList.remove('hidden');
-    spotifyLikedList.classList.add('hidden');
-  }
+  const connected = spotifyConnected;
+  spotifyBrowserPrompt.classList.toggle('hidden', connected);
+  spotifyPlaylistList.classList.toggle('hidden', !connected);
   // Update settings disconnect row
   const disconnectRow = document.getElementById('spotify-disconnect-row');
-  if (disconnectRow) disconnectRow.classList.toggle('hidden', !spotifyConnected);
+  if (disconnectRow) disconnectRow.classList.toggle('hidden', !connected);
+}
+
+function openSpotifyMode() {
+  spotifyMode = true;
+  spotifyBtn.classList.add('active');
+  folderBrowser.classList.add('hidden');
+  spotifyBrowser.classList.remove('hidden');
+  // Show SPOTIFY tab in NFO pane
+  nfoTabSpotifyBtn.classList.remove('hidden');
+  updateSpotifyUI();
+  if (spotifyConnected) {
+    loadSpotifyPlaylists();
+    // Load liked songs into the NFO pane if nothing is loaded yet
+    if (!spotifyActiveSource) {
+      loadSpotifyTracks({ type: 'liked' }, 0);
+    }
+    setNfoPaneVisible(true);
+    switchInfoTab('spotify');
+    nfoBtn.classList.add('hidden');
+  }
+}
+
+function closeSpotifyMode() {
+  spotifyMode = false;
+  spotifyBtn.classList.remove('active');
+  spotifyBrowser.classList.add('hidden');
+  folderBrowser.classList.remove('hidden');
+  nfoTabSpotifyBtn.classList.add('hidden');
+  // If currently on SPOTIFY tab, switch back to NFO or tracklist
+  if (activeInfoTab === 'spotify') {
+    const disc = currentDisc();
+    switchInfoTab(disc && disc.tracks.length ? 'tracklist' : 'nfo');
+  }
+}
+
+async function loadSpotifyPlaylists() {
+  spotifyPlaylistList.innerHTML = '<div class="spotify-pl-loading">Loading playlists\u2026</div>';
+  try {
+    const res = await fetch('/api/spotify/playlists');
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+    const playlists = data.items || [];
+
+    const frag = document.createDocumentFragment();
+
+    // Liked Songs item always first
+    const liked = document.createElement('div');
+    liked.className = 'spotify-pl-item';
+    liked.dataset.type = 'liked';
+    liked.innerHTML = `<span class="spotify-pl-icon">\u2665</span><span class="spotify-pl-name">Liked Songs</span>`;
+    liked.addEventListener('click', () => loadSpotifyTracks({ type: 'liked' }, 0));
+    frag.appendChild(liked);
+
+    for (const pl of playlists) {
+      const item = document.createElement('div');
+      item.className = 'spotify-pl-item';
+      item.dataset.id = pl.id;
+      item.innerHTML = `<span class="spotify-pl-icon">\u266B</span><span class="spotify-pl-name">${escapeHtml(pl.name)}</span><span class="spotify-pl-count">${pl.tracks ? pl.tracks.total : ''}</span>`;
+      item.addEventListener('click', () => loadSpotifyTracks({ type: 'playlist', id: pl.id, name: pl.name }, 0));
+      frag.appendChild(item);
+    }
+    spotifyPlaylistList.innerHTML = '';
+    spotifyPlaylistList.appendChild(frag);
+  } catch (_) {
+    spotifyPlaylistList.innerHTML = '<div class="spotify-pl-loading">Could not load playlists.</div>';
+  }
+}
+
+async function loadSpotifyTracks(source, offset) {
+  if (spotifyTracksLoading && offset > 0) return;
+  spotifyTracksLoading = true;
+
+  if (offset === 0) {
+    spotifyActiveSource = source;
+    spotifyTracksOffset = 0;
+    spotifyTracksTotal  = 0;
+    spotifyTracksList.innerHTML = '<div class="spotify-loading">Loading\u2026</div>';
+    spotifyTracksFooter.classList.add('hidden');
+    // Mark active playlist in sidebar
+    spotifyPlaylistList.querySelectorAll('.spotify-pl-item').forEach((el) => {
+      const isActive = source.type === 'liked'
+        ? el.dataset.type === 'liked'
+        : el.dataset.id === source.id;
+      el.classList.toggle('spotify-pl-active', isActive);
+    });
+    spotifySourceName.textContent = source.type === 'liked' ? 'Liked Songs' : (source.name || 'Playlist');
+    spotifySourceCount.textContent = '';
+    // Open the NFO pane on the SPOTIFY tab
+    setNfoPaneVisible(true);
+    switchInfoTab('spotify');
+    nfoBtn.classList.add('hidden');
+  }
+
+  try {
+    const url = source.type === 'liked'
+      ? `/api/spotify/liked?offset=${offset}&limit=50`
+      : `/api/spotify/playlist-tracks?id=${encodeURIComponent(source.id)}&offset=${offset}&limit=50`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to load tracks');
+    const data = await res.json();
+
+    spotifyTracksTotal  = data.total || 0;
+    spotifyTracksOffset = offset + (data.items || []).length;
+    spotifySourceCount.textContent = spotifyTracksTotal ? `${spotifyTracksTotal} tracks` : '';
+
+    if (offset === 0) spotifyTracksList.innerHTML = '';
+
+    const frag = document.createDocumentFragment();
+    for (const item of (data.items || [])) {
+      const track = source.type === 'liked' ? item.track : item.track;
+      if (!track) continue;
+      const el = document.createElement('div');
+      el.className = 'spotify-track-item';
+      el.dataset.uri = track.uri;
+      const duration = formatTime(Math.floor((track.duration_ms || 0) / 1000));
+      const artists   = (track.artists || []).map((a) => a.name).join(', ');
+      el.innerHTML = `
+        <span class="spotify-play-icon">&#9654;</span>
+        <span class="spotify-track-info">
+          <div class="spotify-track-title">${escapeHtml(track.name || '')}</div>
+          <div class="spotify-track-artist">${escapeHtml(artists)}</div>
+        </span>
+        <span class="spotify-track-duration">${duration}</span>
+      `;
+      el.addEventListener('click', () => playSpotifyTrack(track.uri));
+      frag.appendChild(el);
+    }
+    spotifyTracksList.appendChild(frag);
+
+    if (spotifyTracksOffset < spotifyTracksTotal) {
+      spotifyTracksFooter.classList.remove('hidden');
+    } else {
+      spotifyTracksFooter.classList.add('hidden');
+    }
+  } catch (err) {
+    if (offset === 0) {
+      spotifyTracksList.innerHTML = `<div class="spotify-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
+    }
+  } finally {
+    spotifyTracksLoading = false;
+  }
 }
 
 async function initSpotify() {
@@ -1480,17 +1625,6 @@ async function initSpotify() {
       }
     }
   } catch (_) {}
-}
-
-function openSpotifyPanel() {
-  spotifyPanel.classList.remove('hidden');
-  spotifyBtn.classList.add('active');
-  if (spotifyConnected && likedSongsOffset === 0) loadLikedSongs(0);
-}
-
-function closeSpotifyPanel() {
-  spotifyPanel.classList.add('hidden');
-  spotifyBtn.classList.remove('active');
 }
 
 async function connectSpotify() {
@@ -1522,66 +1656,13 @@ async function connectSpotify() {
           if (typeof Spotify !== 'undefined') initSpotifySDK(token);
           else window.onSpotifyWebPlaybackSDKReady = () => initSpotifySDK(token);
         } catch (_) {}
-        if (!spotifyPanel.classList.contains('hidden')) loadLikedSongs(0);
+        if (spotifyMode) {
+          loadSpotifyPlaylists();
+          loadSpotifyTracks({ type: 'liked' }, 0);
+        }
       }
     } catch (_) {}
   }, 2000);
-}
-
-async function loadLikedSongs(offset) {
-  if (likedSongsLoading) return;
-  likedSongsLoading = true;
-  if (offset === 0) {
-    spotifyLikedList.innerHTML = '<div class="spotify-loading">Loading liked songs...</div>';
-    likedSongsOffset = 0;
-    likedSongsTotal = 0;
-  }
-  try {
-    const res = await fetch(`/api/spotify/liked?offset=${offset}&limit=50`);
-    if (!res.ok) throw new Error('Failed to load liked songs');
-    const data = await res.json();
-    likedSongsTotal = data.total || 0;
-    likedSongsOffset = offset + (data.items || []).length;
-
-    if (offset === 0) spotifyLikedList.innerHTML = '';
-    spotifyCount.textContent = likedSongsTotal ? `${likedSongsTotal} tracks` : '';
-
-    const frag = document.createDocumentFragment();
-    for (const { track } of (data.items || [])) {
-      if (!track) continue;
-      const item = document.createElement('div');
-      item.className = 'spotify-track-item';
-      item.dataset.uri = track.uri;
-      const duration = formatTime(Math.floor((track.duration_ms || 0) / 1000));
-      const artists = (track.artists || []).map((a) => a.name).join(', ');
-      item.innerHTML = `
-        <span class="spotify-play-icon">&#9654;</span>
-        <span class="spotify-track-info">
-          <div class="spotify-track-title">${escapeHtml(track.name || '')}</div>
-          <div class="spotify-track-artist">${escapeHtml(artists)}</div>
-        </span>
-        <span class="spotify-track-album">${escapeHtml((track.album && track.album.name) || '')}</span>
-        <span class="spotify-track-duration">${duration}</span>
-      `;
-      item.addEventListener('click', () => playSpotifyTrack(track.uri));
-      frag.appendChild(item);
-    }
-    spotifyLikedList.appendChild(frag);
-
-    if (likedSongsOffset < likedSongsTotal) {
-      const loadMore = document.createElement('div');
-      loadMore.className = 'spotify-load-more';
-      loadMore.textContent = `Load more (${likedSongsOffset} of ${likedSongsTotal})`;
-      loadMore.addEventListener('click', () => { loadMore.remove(); loadLikedSongs(likedSongsOffset); });
-      spotifyLikedList.appendChild(loadMore);
-    }
-  } catch (err) {
-    if (offset === 0) {
-      spotifyLikedList.innerHTML = `<div class="spotify-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
-    }
-  } finally {
-    likedSongsLoading = false;
-  }
 }
 
 async function playSpotifyTrack(uri) {
@@ -1625,22 +1706,25 @@ async function disconnectSpotify() {
   spotifyConnected = false;
   spotifyAccessToken = null;
   spotifyTokenExpiry = 0;
-  likedSongsOffset = 0;
-  likedSongsTotal = 0;
   if (spotifyPlayer) { spotifyPlayer.disconnect(); spotifyPlayer = null; }
   spotifyDeviceId = null;
-  spotifyLikedList.innerHTML = '';
-  spotifyCount.textContent = '';
-  updateSpotifyUI();
+  spotifyTracksList.innerHTML = '';
+  spotifyTracksFooter.classList.add('hidden');
+  spotifySourceCount.textContent = '';
+  spotifyPlaylistList.innerHTML = '';
+  spotifyActiveSource = null;
+  closeSpotifyMode();
 }
 
 spotifyBtn.addEventListener('click', () => {
-  if (spotifyPanel.classList.contains('hidden')) openSpotifyPanel();
-  else closeSpotifyPanel();
+  if (spotifyMode) closeSpotifyMode();
+  else openSpotifyMode();
 });
 
-spotifyClose.addEventListener('click', closeSpotifyPanel);
-spotifyConnectBtnPanel.addEventListener('click', connectSpotify);
+spotifyBrowserConnectBtn.addEventListener('click', connectSpotify);
+spotifyTracksLoadMoreBtn.addEventListener('click', () => {
+  if (spotifyActiveSource) loadSpotifyTracks(spotifyActiveSource, spotifyTracksOffset);
+});
 
 // ── API ───────────────────────────────────────────────────────────────────────
 let scanToken = 0;
