@@ -1370,6 +1370,50 @@ body.darwin #dir-bar { padding-left: 76px; }
 .spotify-quota-notice button:hover { opacity: 0.85; }
 
 /* ── SoundCloud mode button ─────────────────── */
+/* Local music return button — only shown in streaming modes */
+#local-btn {
+  background: var(--bg3);
+  border-color: var(--border);
+  color: var(--text-dim);
+  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  font-size: 18px;
+  line-height: 1;
+}
+#local-btn:hover { background: var(--highlight); color: var(--text); border-color: var(--text-dim); }
+
+/* Stream info pane (inside nfo-pane, shown for SC/Spotify) */
+#stream-info-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 14px;
+  min-height: 0;
+}
+.stream-info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stream-info-table th {
+  text-align: left;
+  width: 72px;
+  padding: 3px 10px 3px 0;
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.stream-info-table td {
+  padding: 3px 0;
+  color: var(--text);
+  word-break: break-word;
+}
+.stream-info-desc {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 #soundcloud-btn {
   background: #f50;
   border-color: #f50;

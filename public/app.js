@@ -507,8 +507,96 @@ function setNfoPaneVisible(visible) {
   // Show artwork in the NFO slot when NFO is closed (if artwork is loaded)
   artworkPane.classList.toggle('hidden', visible || !currentArtworkUrl);
 }
-const nfoContent   = document.getElementById('nfo-content');
-const nfoPaneClose = document.getElementById('nfo-pane-close');
+const nfoContent       = document.getElementById('nfo-content');
+const nfoPaneClose     = document.getElementById('nfo-pane-close');
+const streamInfoPanel  = document.getElementById('stream-info-panel');
+const streamInfoContent = document.getElementById('stream-info-content');
+const localBtn         = document.getElementById('local-btn');
+
+// Switch NFO pane between local (NFO/DETECT tabs) and streaming (INFO panel) mode
+function enterStreamingInfoMode() {
+  document.getElementById('nfo-tabs').classList.add('hidden');
+  document.getElementById('nfo-tab-nfo').classList.add('hidden');
+  document.getElementById('nfo-tab-tracklist') && document.getElementById('nfo-tab-tracklist').classList.add('hidden');
+  document.getElementById('nfo-tab-detect').classList.add('hidden');
+  document.getElementById('nfo-detect-btn').classList.add('hidden');
+  streamInfoPanel.classList.remove('hidden');
+  nfoPane.classList.remove('hidden');
+  artworkPane.classList.add('hidden');
+  localBtn.classList.remove('hidden');
+}
+
+function exitStreamingInfoMode() {
+  streamInfoPanel.classList.add('hidden');
+  streamInfoContent.innerHTML = '';
+  document.getElementById('nfo-tabs').classList.remove('hidden');
+  document.getElementById('nfo-tab-nfo').classList.remove('hidden');
+  nfoPane.classList.add('hidden');
+  artworkPane.classList.toggle('hidden', !currentArtworkUrl);
+  localBtn.classList.add('hidden');
+}
+
+function formatDurationMs(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function renderStreamInfo(rows, description) {
+  const escFn = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const linkify = (text) => escFn(text).replace(
+    /https?:\/\/[^\s<>"]+/g,
+    (url) => `<a class="nfo-link" href="${escFn(url)}" target="_blank" rel="noopener noreferrer">${escFn(url)}</a>`
+  );
+  let html = '<table class="stream-info-table">';
+  for (const [label, value] of rows) {
+    if (!value) continue;
+    html += `<tr><th>${escFn(label)}</th><td>${escFn(String(value))}</td></tr>`;
+  }
+  html += '</table>';
+  if (description && description.trim()) {
+    html += `<div class="stream-info-desc">${linkify(description)}</div>`;
+  }
+  streamInfoContent.innerHTML = html;
+}
+
+function showSoundcloudTrackInfo(track) {
+  const tags = (track.tag_list || '').split(/\s+/).filter(Boolean).join(', ');
+  const plays = track.playback_count ? track.playback_count.toLocaleString() : null;
+  const favs  = track.favoritings_count ? track.favoritings_count.toLocaleString() : null;
+  const bpm   = track.bpm || null;
+  const key   = track.key_signature || null;
+  const date  = track.created_at ? track.created_at.slice(0, 10) : null;
+  renderStreamInfo([
+    ['Artist',  track.user && track.user.username],
+    ['Genre',   track.genre],
+    ['Tags',    tags || null],
+    ['BPM',     bpm],
+    ['Key',     key],
+    ['Duration', formatDurationMs(track.duration)],
+    ['Plays',   plays],
+    ['Likes',   favs],
+    ['Released', date],
+    ['Label',   track.label_name],
+  ], track.description);
+}
+
+function showSpotifyTrackInfo(item) {
+  // item is track_window.current_track from player_state_changed
+  const artists = (item.artists || []).map((a) => a.name).join(', ');
+  const album   = item.album && item.album.name;
+  const release = item.album && item.album.release_date;
+  const duration = item.duration_ms ? formatDurationMs(item.duration_ms) : null;
+  renderStreamInfo([
+    ['Artists',  artists],
+    ['Album',    album],
+    ['Released', release],
+    ['Duration', duration],
+  ], null);
+}
 
 let lastNfoDir = '';
 let lastNfoText = '';
@@ -1473,7 +1561,6 @@ function initSpotifySDK(token) {
 
     // Show live spectrum when Spotify starts playing — find SDK's <audio> element
     if (!playerState.paused && waveformVisible) {
-      // The Spotify Web Playback SDK injects its own <audio> element into the DOM
       const spotifyAudio = [...document.querySelectorAll('audio')].find((el) => el !== audio);
       if (spotifyAudio) {
         liveSpectrum.connectAudioElement(spotifyAudio);
@@ -1482,6 +1569,9 @@ function initSpotifySDK(token) {
         showLiveSpectrum();
       }
     }
+
+    // Populate streaming info pane with Spotify track metadata
+    showSpotifyTrackInfo(item);
 
     // Auto-advance to the next track when the current one finishes
     if (justEnded) {
@@ -1516,10 +1606,12 @@ function openSpotifyMode() {
   if (soundcloudMode) closeSoundcloudMode();
   spotifyMode = true;
   spotifyBtn.classList.add('active');
+  spotifyBtn.title = 'Exit Spotify mode';
   folderBrowser.classList.add('hidden');
   spotifyBrowser.classList.remove('hidden');
   discList.classList.add('hidden');
   spotifyTracksPanel.classList.remove('hidden');
+  enterStreamingInfoMode();
   updateSpotifyUI();
   if (spotifyConnected) {
     loadSpotifyPlaylists();
@@ -1532,10 +1624,14 @@ function openSpotifyMode() {
 function closeSpotifyMode() {
   spotifyMode = false;
   spotifyBtn.classList.remove('active');
+  spotifyBtn.title = 'Spotify Liked Songs';
   spotifyBrowser.classList.add('hidden');
   folderBrowser.classList.remove('hidden');
   spotifyTracksPanel.classList.add('hidden');
   discList.classList.remove('hidden');
+  exitStreamingInfoMode();
+  liveSpectrum.stop();
+  liveSpectrumWrap.classList.add('hidden');
 }
 
 async function loadSpotifyPlaylists() {
@@ -1922,10 +2018,12 @@ function openSoundcloudMode() {
   if (spotifyMode) closeSpotifyMode();
   soundcloudMode = true;
   soundcloudBtn.classList.add('active');
+  soundcloudBtn.title = 'Exit SoundCloud mode';
   folderBrowser.classList.add('hidden');
   soundcloudBrowser.classList.remove('hidden');
   discList.classList.add('hidden');
   soundcloudTracksPanel.classList.remove('hidden');
+  enterStreamingInfoMode();
   updateSoundcloudUI();
   if (soundcloudConnected) {
     loadSoundcloudPlaylists();
@@ -1936,10 +2034,14 @@ function openSoundcloudMode() {
 function closeSoundcloudMode() {
   soundcloudMode = false;
   soundcloudBtn.classList.remove('active');
+  soundcloudBtn.title = 'SoundCloud Liked Tracks';
   soundcloudBrowser.classList.add('hidden');
   folderBrowser.classList.remove('hidden');
   soundcloudTracksPanel.classList.add('hidden');
   discList.classList.remove('hidden');
+  exitStreamingInfoMode();
+  liveSpectrum.stop();
+  liveSpectrumWrap.classList.add('hidden');
 }
 
 async function loadSoundcloudTracks(nextHref) {
@@ -2022,6 +2124,9 @@ async function playSoundcloudTrack(idx) {
   npTrackNumber.textContent = '';
   btnPlay.innerHTML = '&#9646;&#9646;';
 
+  // Populate info pane with SoundCloud track metadata
+  showSoundcloudTrackInfo(track);
+
   // Highlight active track
   soundcloudTracksList.querySelectorAll('.soundcloud-track-item').forEach((el) => {
     el.classList.toggle('soundcloud-track-active', Number(el.dataset.idx) === idx);
@@ -2091,6 +2196,11 @@ async function disconnectSoundcloud() {
 soundcloudBtn.addEventListener('click', () => {
   if (soundcloudMode) closeSoundcloudMode();
   else openSoundcloudMode();
+});
+
+localBtn.addEventListener('click', () => {
+  if (spotifyMode) closeSpotifyMode();
+  else if (soundcloudMode) closeSoundcloudMode();
 });
 
 soundcloudBrowserConnectBtn.addEventListener('click', connectSoundcloud);

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3] - 2026-03-11
+
+### Added
+- Stream info pane: NFO pane switches to a track info view in SoundCloud/Spotify mode, showing genre, tags, BPM, key, duration, play count, description (SC) or album, artists, release date (Spotify)
+- "Home" button (⌂) appears in toolbar-left when in a streaming mode — click it to return to local music
+- SC and Spotify buttons update their tooltip to "Exit … mode" while active for discoverability
+
 ## [1.15.2] - 2026-03-11
 
 ### Added
