@@ -109,9 +109,9 @@ const npTrackNumber = document.getElementById('np-track-number');
 const npTitle       = document.getElementById('np-title');
 const npPerformer   = document.getElementById('np-performer');
 const npSection     = document.getElementById('now-playing');
-const spotifyBtn       = document.getElementById('spotify-btn');
-const spotifySearchBtn = document.getElementById('spotify-search-btn');
-const soundcloudBtn    = document.getElementById('soundcloud-btn');
+const spotifyBtn          = document.getElementById('spotify-btn');
+const spotifySearchBtn    = document.getElementById('spotify-search-btn');
+const soundcloudSearchBtn = document.getElementById('soundcloud-search-btn');
 const finderBtn       = document.getElementById('finder-btn');
 const nfoBtn          = document.getElementById('nfo-btn');
 const tlBtn           = document.getElementById('tl-btn');
@@ -468,7 +468,6 @@ function switchInfoTab(tab) {
   nfoTabNfo.classList.toggle('hidden', tab !== 'nfo');
   nfoTabTracklist.classList.toggle('hidden', tab !== 'tracklist');
   nfoTabDetect.classList.toggle('hidden', tab !== 'detect');
-  nfoTabSpotify.classList.toggle('hidden', tab !== 'spotify');
 }
 
 document.getElementById('nfo-tabs').addEventListener('click', (e) => {
@@ -680,7 +679,7 @@ function updateNowPlaying(trackIdx) {
     npTitle.classList.remove('is-fav');
     npPerformer.textContent = disc.albumPerformer || '';
     spotifySearchBtn.classList.add('hidden');
-    soundcloudBtn.classList.add('hidden');
+    soundcloudSearchBtn.classList.add('hidden');
     finderBtn.classList.toggle('hidden', !disc.mp3Path);
     if (disc.mp3Path) finderBtn.dataset.path = disc.mp3Path;
     tlBtn.classList.toggle('hidden', !disc.mp3Path);
@@ -698,11 +697,11 @@ function updateNowPlaying(trackIdx) {
   if (query) {
     spotifySearchBtn.href = `https://open.spotify.com/search/${encodeURIComponent(query)}`;
     spotifySearchBtn.classList.remove('hidden');
-    soundcloudBtn.href = `https://soundcloud.com/search?q=${encodeURIComponent(query)}`;
-    soundcloudBtn.classList.remove('hidden');
+    soundcloudSearchBtn.href = `https://soundcloud.com/search?q=${encodeURIComponent(query)}`;
+    soundcloudSearchBtn.classList.remove('hidden');
   } else {
     spotifySearchBtn.classList.add('hidden');
-    soundcloudBtn.classList.add('hidden');
+    soundcloudSearchBtn.classList.add('hidden');
   }
 
   if (disc.mp3Path) {
@@ -1377,6 +1376,19 @@ let spotifyAccessToken = null;
 let spotifyTokenExpiry = 0;
 let spotifyPollTimer = null;
 let spotifyWasPlaying = false; // tracks previous paused state for end-of-track detection
+let spotifyCurrentUri = null;  // URI of the currently loaded Spotify track
+let spotifySDKReady = false;
+let spotifySDKPendingToken = null;
+
+// Must be defined synchronously at module scope — the SDK script is async and may
+// call this before initSpotify() has a chance to set it.
+window.onSpotifyWebPlaybackSDKReady = () => {
+  spotifySDKReady = true;
+  if (spotifySDKPendingToken) {
+    initSpotifySDK(spotifySDKPendingToken);
+    spotifySDKPendingToken = null;
+  }
+};
 let spotifyMode = false;
 let spotifyActiveSource   = null; // { type:'liked' } | { type:'playlist', id, name }
 let spotifyTracksOffset   = 0;
@@ -1387,8 +1399,7 @@ const spotifyBrowser           = document.getElementById('spotify-browser');
 const spotifyBrowserPrompt     = document.getElementById('spotify-browser-prompt');
 const spotifyBrowserConnectBtn = document.getElementById('spotify-browser-connect-btn');
 const spotifyPlaylistList      = document.getElementById('spotify-playlist-list');
-const nfoTabSpotifyBtn         = document.getElementById('nfo-tab-spotify-btn');
-const nfoTabSpotify            = document.getElementById('nfo-tab-spotify');
+const spotifyTracksPanel       = document.getElementById('spotify-tracks-panel');
 const spotifySourceName        = document.getElementById('spotify-source-name');
 const spotifySourceCount       = document.getElementById('spotify-source-count');
 const spotifyTracksList        = document.getElementById('spotify-tracks-list');
@@ -1425,6 +1436,7 @@ function initSpotifySDK(token) {
 
     const justEnded = spotifyWasPlaying && playerState.paused && playerState.position === 0;
     spotifyWasPlaying = !playerState.paused;
+    spotifyCurrentUri = item.uri;
 
     // Mark which track is active in the tracks list
     spotifyTracksList.querySelectorAll('.spotify-track-item').forEach((el) => {
@@ -1462,22 +1474,19 @@ function updateSpotifyUI() {
 }
 
 function openSpotifyMode() {
+  if (soundcloudMode) closeSoundcloudMode();
   spotifyMode = true;
   spotifyBtn.classList.add('active');
   folderBrowser.classList.add('hidden');
   spotifyBrowser.classList.remove('hidden');
-  // Show SPOTIFY tab in NFO pane
-  nfoTabSpotifyBtn.classList.remove('hidden');
+  discList.classList.add('hidden');
+  spotifyTracksPanel.classList.remove('hidden');
   updateSpotifyUI();
   if (spotifyConnected) {
     loadSpotifyPlaylists();
-    // Load liked songs into the NFO pane if nothing is loaded yet
     if (!spotifyActiveSource) {
       loadSpotifyTracks({ type: 'liked' }, 0);
     }
-    setNfoPaneVisible(true);
-    switchInfoTab('spotify');
-    nfoBtn.classList.add('hidden');
   }
 }
 
@@ -1486,12 +1495,8 @@ function closeSpotifyMode() {
   spotifyBtn.classList.remove('active');
   spotifyBrowser.classList.add('hidden');
   folderBrowser.classList.remove('hidden');
-  nfoTabSpotifyBtn.classList.add('hidden');
-  // If currently on SPOTIFY tab, switch back to NFO or tracklist
-  if (activeInfoTab === 'spotify') {
-    const disc = currentDisc();
-    switchInfoTab(disc && disc.tracks.length ? 'tracklist' : 'nfo');
-  }
+  spotifyTracksPanel.classList.add('hidden');
+  discList.classList.remove('hidden');
 }
 
 async function loadSpotifyPlaylists() {
@@ -1522,8 +1527,8 @@ async function loadSpotifyPlaylists() {
     }
     spotifyPlaylistList.innerHTML = '';
     spotifyPlaylistList.appendChild(frag);
-  } catch (_) {
-    spotifyPlaylistList.innerHTML = '<div class="spotify-pl-loading">Could not load playlists.</div>';
+  } catch (err) {
+    spotifyPlaylistList.innerHTML = `<div class="spotify-pl-loading">Could not load playlists.<br><small>${escapeHtml(err.message)}</small></div>`;
   }
 }
 
@@ -1546,10 +1551,6 @@ async function loadSpotifyTracks(source, offset) {
     });
     spotifySourceName.textContent = source.type === 'liked' ? 'Liked Songs' : (source.name || 'Playlist');
     spotifySourceCount.textContent = '';
-    // Open the NFO pane on the SPOTIFY tab
-    setNfoPaneVisible(true);
-    switchInfoTab('spotify');
-    nfoBtn.classList.add('hidden');
   }
 
   try {
@@ -1557,7 +1558,13 @@ async function loadSpotifyTracks(source, offset) {
       ? `/api/spotify/liked?offset=${offset}&limit=50`
       : `/api/spotify/playlist-tracks?id=${encodeURIComponent(source.id)}&offset=${offset}&limit=50`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to load tracks');
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 403 && errData.error === 'quota_exceeded') {
+        throw new Error('Playlist tracks require Spotify Extended Quota access.\nRequest it at developer.spotify.com → your app → Quota Extension.');
+      }
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
     const data = await res.json();
 
     spotifyTracksTotal  = data.total || 0;
@@ -1595,7 +1602,19 @@ async function loadSpotifyTracks(source, offset) {
     }
   } catch (err) {
     if (offset === 0) {
-      spotifyTracksList.innerHTML = `<div class="spotify-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
+      const isQuota = err.message.includes('quota_exceeded') || err.message.includes('403');
+      if (isQuota && spotifyActiveSource && spotifyActiveSource.type === 'playlist') {
+        spotifyTracksList.innerHTML = `<div class="spotify-quota-notice">
+          <p>Spotify restricts playlist track access for this app.</p>
+          <p>You can still play this playlist directly:</p>
+          <button id="spotify-play-playlist-btn">Play playlist</button>
+        </div>`;
+        document.getElementById('spotify-play-playlist-btn').addEventListener('click', () => {
+          playSpotifyContext(`spotify:playlist:${spotifyActiveSource.id}`);
+        });
+      } else {
+        spotifyTracksList.innerHTML = `<div class="spotify-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
+      }
     }
   } finally {
     spotifyTracksLoading = false;
@@ -1612,29 +1631,34 @@ async function initSpotify() {
     if (status.connected) {
       try {
         const token = await getSpotifyToken();
-        if (typeof Spotify !== 'undefined') {
+        if (spotifySDKReady) {
           initSpotifySDK(token);
         } else {
-          window.onSpotifyWebPlaybackSDKReady = () => initSpotifySDK(token);
+          spotifySDKPendingToken = token;
         }
       } catch (_) {}
-    } else {
-      // Set up SDK callback for when auth completes later
-      if (typeof Spotify === 'undefined') {
-        window.onSpotifyWebPlaybackSDKReady = () => {};
-      }
     }
   } catch (_) {}
 }
 
 async function connectSpotify() {
-  const urlRes = await fetch('/api/spotify/auth-url');
-  if (!urlRes.ok) {
-    alert('Please configure your Spotify Client ID and Secret in Settings first.');
+  // Open the popup synchronously (before any await) to avoid popup blockers
+  const popup = window.open('', 'spotify-auth', 'width=500,height=700,menubar=no,toolbar=no');
+  if (!popup) { alert('Popup blocked. Please allow popups for this page.'); return; }
+
+  try {
+    const urlRes = await fetch('/api/spotify/auth-url');
+    if (!urlRes.ok) {
+      popup.close();
+      alert('Please configure your Spotify Client ID and Secret in Settings first.');
+      return;
+    }
+    const { url } = await urlRes.json();
+    popup.location.href = url;
+  } catch (_) {
+    popup.close();
     return;
   }
-  const { url } = await urlRes.json();
-  window.open(url, '_blank', 'width=500,height=700,noopener');
 
   // Poll for connection (every 2s, up to 60s)
   if (spotifyPollTimer) clearInterval(spotifyPollTimer);
@@ -1653,8 +1677,8 @@ async function connectSpotify() {
         updateSpotifyUI();
         try {
           const token = await getSpotifyToken();
-          if (typeof Spotify !== 'undefined') initSpotifySDK(token);
-          else window.onSpotifyWebPlaybackSDKReady = () => initSpotifySDK(token);
+          if (spotifySDKReady) initSpotifySDK(token);
+          else spotifySDKPendingToken = token;
         } catch (_) {}
         if (spotifyMode) {
           loadSpotifyPlaylists();
@@ -1663,6 +1687,32 @@ async function connectSpotify() {
       }
     } catch (_) {}
   }, 2000);
+}
+
+async function playSpotifyContext(contextUri) {
+  let deviceId = spotifyDeviceId;
+  if (!deviceId) {
+    try {
+      const res = await fetch('/api/spotify/devices');
+      if (res.ok) {
+        const data = await res.json();
+        const pick = (data.devices || []).find((d) => d.is_active) || (data.devices || [])[0];
+        if (pick) deviceId = pick.id;
+      }
+    } catch (_) {}
+  }
+  if (!deviceId) return;
+  try {
+    const token = await getSpotifyToken();
+    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context_uri: contextUri }),
+    });
+    if (!audio.paused) audio.pause();
+  } catch (err) {
+    console.error('Spotify context play error:', err);
+  }
 }
 
 async function playSpotifyTrack(uri) {
@@ -1708,6 +1758,7 @@ async function disconnectSpotify() {
   spotifyTokenExpiry = 0;
   if (spotifyPlayer) { spotifyPlayer.disconnect(); spotifyPlayer = null; }
   spotifyDeviceId = null;
+  spotifyCurrentUri = null;
   spotifyTracksList.innerHTML = '';
   spotifyTracksFooter.classList.add('hidden');
   spotifySourceCount.textContent = '';
@@ -1724,6 +1775,288 @@ spotifyBtn.addEventListener('click', () => {
 spotifyBrowserConnectBtn.addEventListener('click', connectSpotify);
 spotifyTracksLoadMoreBtn.addEventListener('click', () => {
   if (spotifyActiveSource) loadSpotifyTracks(spotifyActiveSource, spotifyTracksOffset);
+});
+
+// ── SoundCloud ────────────────────────────────────────────────────────────────
+let soundcloudConnected   = false;
+let soundcloudAccessToken = null;
+let soundcloudTokenExpiry = 0;
+let soundcloudPollTimer   = null;
+let soundcloudMode        = false;
+let soundcloudTracks      = [];
+let soundcloudNextHref    = null;
+let soundcloudActiveIdx   = -1;
+let soundcloudActiveSource = 'liked';
+
+const soundcloudBtn               = document.getElementById('soundcloud-btn');
+const soundcloudBrowser           = document.getElementById('soundcloud-browser');
+const soundcloudBrowserPrompt     = document.getElementById('soundcloud-browser-prompt');
+const soundcloudBrowserConnectBtn = document.getElementById('soundcloud-browser-connect-btn');
+const soundcloudPlaylistList      = document.getElementById('soundcloud-playlist-list');
+const soundcloudTracksPanel       = document.getElementById('soundcloud-tracks-panel');
+const soundcloudTracksList        = document.getElementById('soundcloud-tracks-list');
+const soundcloudTracksFooter      = document.getElementById('soundcloud-tracks-footer');
+const soundcloudTracksLoadMoreBtn = document.getElementById('soundcloud-tracks-load-more-btn');
+
+async function getSoundcloudToken() {
+  if (soundcloudAccessToken && Date.now() < soundcloudTokenExpiry - 60000) return soundcloudAccessToken;
+  const res = await fetch('/api/soundcloud/refresh');
+  if (!res.ok) throw new Error('SoundCloud token refresh failed');
+  const data = await res.json();
+  soundcloudAccessToken = data.access_token;
+  soundcloudTokenExpiry = data.expires_at || (Date.now() + 3600000);
+  return soundcloudAccessToken;
+}
+
+function updateSoundcloudUI() {
+  soundcloudBrowserPrompt.classList.toggle('hidden', soundcloudConnected);
+  soundcloudPlaylistList.classList.toggle('hidden', !soundcloudConnected);
+  const disconnectRow = document.getElementById('soundcloud-disconnect-row');
+  if (disconnectRow) disconnectRow.classList.toggle('hidden', !soundcloudConnected);
+}
+
+async function loadSoundcloudPlaylists() {
+  try {
+    const res = await fetch('/api/soundcloud/playlists');
+    if (!res.ok) return;
+    const playlists = await res.json();
+    const frag = document.createDocumentFragment();
+
+    // Always show "Liked Tracks" entry at the top
+    const liked = document.createElement('div');
+    liked.className = 'soundcloud-pl-item soundcloud-pl-active';
+    liked.dataset.type = 'liked';
+    liked.innerHTML = `<span class="soundcloud-pl-icon">&#9829;</span><span class="soundcloud-pl-name">Liked Tracks</span>`;
+    liked.addEventListener('click', () => {
+      soundcloudPlaylistList.querySelectorAll('.soundcloud-pl-item').forEach((el) => el.classList.remove('soundcloud-pl-active'));
+      liked.classList.add('soundcloud-pl-active');
+      soundcloudTracks = [];
+      soundcloudNextHref = null;
+      soundcloudActiveSource = 'liked';
+      loadSoundcloudTracks(null);
+    });
+    frag.appendChild(liked);
+
+    for (const pl of playlists) {
+      const item = document.createElement('div');
+      item.className = 'soundcloud-pl-item';
+      item.dataset.id = pl.id;
+      const count = pl.track_count != null ? pl.track_count : (pl.tracks ? pl.tracks.length : '');
+      item.innerHTML = `<span class="soundcloud-pl-icon">&#9835;</span><span class="soundcloud-pl-name">${escapeHtml(pl.title || '')}</span><span class="soundcloud-pl-count">${count}</span>`;
+      item.addEventListener('click', () => {
+        soundcloudPlaylistList.querySelectorAll('.soundcloud-pl-item').forEach((el) => el.classList.remove('soundcloud-pl-active'));
+        item.classList.add('soundcloud-pl-active');
+        soundcloudActiveSource = { type: 'playlist', id: pl.id, tracks: pl.tracks || [] };
+        loadSoundcloudPlaylistTracks(pl);
+      });
+      frag.appendChild(item);
+    }
+    soundcloudPlaylistList.innerHTML = '';
+    soundcloudPlaylistList.appendChild(frag);
+  } catch (_) {}
+}
+
+function loadSoundcloudPlaylistTracks(pl) {
+  soundcloudTracks = (pl.tracks || []).filter((t) => t && t.id);
+  soundcloudNextHref = null;
+  soundcloudTracksList.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  soundcloudTracks.forEach((track, idx) => {
+    const el = document.createElement('div');
+    el.className = 'soundcloud-track-item';
+    el.dataset.idx = String(idx);
+    const dur = track.duration ? formatDuration(Math.round(track.duration / 1000)) : '';
+    el.innerHTML = `<span class="soundcloud-play-icon">&#9654;</span>`
+      + `<div class="soundcloud-track-info">`
+      + `<div class="soundcloud-track-title">${escapeHtml(track.title || '—')}</div>`
+      + `<div class="soundcloud-track-artist">${escapeHtml(track.user ? track.user.username : '')}</div>`
+      + `</div>`
+      + `<span class="soundcloud-track-duration">${escapeHtml(dur)}</span>`;
+    el.addEventListener('click', () => playSoundcloudTrack(idx));
+    frag.appendChild(el);
+  });
+  soundcloudTracksList.appendChild(frag);
+  soundcloudTracksFooter.classList.add('hidden');
+}
+
+function openSoundcloudMode() {
+  if (spotifyMode) closeSpotifyMode();
+  soundcloudMode = true;
+  soundcloudBtn.classList.add('active');
+  folderBrowser.classList.add('hidden');
+  soundcloudBrowser.classList.remove('hidden');
+  discList.classList.add('hidden');
+  soundcloudTracksPanel.classList.remove('hidden');
+  updateSoundcloudUI();
+  if (soundcloudConnected) {
+    loadSoundcloudPlaylists();
+    if (soundcloudTracks.length === 0) loadSoundcloudTracks(null);
+  }
+}
+
+function closeSoundcloudMode() {
+  soundcloudMode = false;
+  soundcloudBtn.classList.remove('active');
+  soundcloudBrowser.classList.add('hidden');
+  folderBrowser.classList.remove('hidden');
+  soundcloudTracksPanel.classList.add('hidden');
+  discList.classList.remove('hidden');
+}
+
+async function loadSoundcloudTracks(nextHref) {
+  try {
+    const url = nextHref
+      ? `/api/soundcloud/liked?next_href=${encodeURIComponent(nextHref)}`
+      : '/api/soundcloud/liked';
+    if (!nextHref) {
+      soundcloudTracksList.innerHTML = '<div class="soundcloud-loading">Loading\u2026</div>';
+      soundcloudTracksFooter.classList.add('hidden');
+    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (!nextHref) {
+      soundcloudTracks = [];
+      soundcloudTracksList.innerHTML = '';
+    }
+
+    const startIdx = soundcloudTracks.length;
+    soundcloudTracks.push(...(data.collection || []));
+    soundcloudNextHref = data.next_href || null;
+
+
+
+    const frag = document.createDocumentFragment();
+    (data.collection || []).forEach((track, i) => {
+      const idx = startIdx + i;
+      const el = document.createElement('div');
+      el.className = 'soundcloud-track-item';
+      el.dataset.idx = String(idx);
+      const dur = track.duration ? formatDuration(Math.round(track.duration / 1000)) : '';
+      el.innerHTML = `<span class="soundcloud-play-icon">&#9654;</span>`
+        + `<div class="soundcloud-track-info">`
+        + `<div class="soundcloud-track-title">${escapeHtml(track.title || '—')}</div>`
+        + `<div class="soundcloud-track-artist">${escapeHtml(track.user ? track.user.username : '')}</div>`
+        + `</div>`
+        + `<span class="soundcloud-track-duration">${escapeHtml(dur)}</span>`;
+      el.addEventListener('click', () => playSoundcloudTrack(idx));
+      frag.appendChild(el);
+    });
+    soundcloudTracksList.appendChild(frag);
+
+    soundcloudTracksFooter.classList.toggle('hidden', !soundcloudNextHref);
+  } catch (err) {
+    soundcloudTracksList.innerHTML = `<div class="soundcloud-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function playSoundcloudTrack(idx) {
+  const track = soundcloudTracks[idx];
+  if (!track) return;
+  soundcloudActiveIdx = idx;
+
+  // Pause Spotify if playing
+  if (spotifyPlayer && spotifyCurrentUri) {
+    spotifyPlayer.pause().catch(() => {});
+  }
+
+  // Clear local-track state (artwork, waveform, disc)
+  state.currentDiscId = null;
+  currentArtworkPath = null;
+  if (currentArtworkUrl) { URL.revokeObjectURL(currentArtworkUrl); currentArtworkUrl = null; }
+  artworkImg.src = '';
+  artworkPane.classList.add('hidden');
+  npSection.classList.remove('has-artwork');
+  npSection.style.removeProperty('--artwork');
+  currentWfPath = null;
+  waveformRenderer.clear();
+  wfSection.classList.add('hidden');
+
+  audio.src = `/api/soundcloud/stream/${encodeURIComponent(track.id)}`;
+  audio.play().catch(() => {});
+
+  // Update now-playing display
+  npDisc.textContent = track.user ? track.user.username : '';
+  npTitle.textContent = track.title || '—';
+  npPerformer.textContent = '';
+  npTrackNumber.textContent = '';
+  btnPlay.innerHTML = '&#9646;&#9646;';
+
+  // Highlight active track
+  soundcloudTracksList.querySelectorAll('.soundcloud-track-item').forEach((el) => {
+    el.classList.toggle('soundcloud-track-active', Number(el.dataset.idx) === idx);
+  });
+}
+
+async function initSoundcloud() {
+  try {
+    const statusRes = await fetch('/api/soundcloud/status');
+    if (!statusRes.ok) return;
+    const status = await statusRes.json();
+    soundcloudConnected = status.connected;
+    updateSoundcloudUI();
+  } catch (_) {}
+}
+
+async function connectSoundcloud() {
+  // Open the popup synchronously (before any await) to avoid popup blockers
+  const popup = window.open('', 'soundcloud-auth', 'width=500,height=700,menubar=no,toolbar=no');
+  if (!popup) { alert('Popup blocked. Please allow popups for this page.'); return; }
+
+  try {
+    const urlRes = await fetch('/api/soundcloud/auth-url');
+    if (!urlRes.ok) {
+      popup.close();
+      alert('Please configure your SoundCloud Client ID and Secret in Settings first.');
+      return;
+    }
+    const { url } = await urlRes.json();
+    popup.location.href = url;
+  } catch (_) {
+    popup.close();
+    return;
+  }
+
+  soundcloudPollTimer = setInterval(async () => {
+    try {
+      const status = await fetch('/api/soundcloud/status').then((r) => r.json());
+      if (status.connected) {
+        clearInterval(soundcloudPollTimer);
+        soundcloudPollTimer = null;
+        soundcloudConnected = true;
+        updateSoundcloudUI();
+        if (soundcloudMode) {
+          loadSoundcloudPlaylists();
+          loadSoundcloudTracks(null);
+        }
+      }
+    } catch (_) {}
+  }, 2000);
+}
+
+async function disconnectSoundcloud() {
+  await fetch('/api/soundcloud/disconnect').catch(() => {});
+  soundcloudConnected = false;
+  soundcloudAccessToken = null;
+  soundcloudTokenExpiry = 0;
+  soundcloudTracks = [];
+  soundcloudNextHref = null;
+  soundcloudActiveIdx = -1;
+  soundcloudTracksList.innerHTML = '';
+  soundcloudTracksFooter.classList.add('hidden');
+  soundcloudPlaylistList.innerHTML = '';
+  closeSoundcloudMode();
+}
+
+soundcloudBtn.addEventListener('click', () => {
+  if (soundcloudMode) closeSoundcloudMode();
+  else openSoundcloudMode();
+});
+
+soundcloudBrowserConnectBtn.addEventListener('click', connectSoundcloud);
+soundcloudTracksLoadMoreBtn.addEventListener('click', () => {
+  if (soundcloudNextHref) loadSoundcloudTracks(soundcloudNextHref);
 });
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -1863,6 +2196,11 @@ audio.addEventListener('play', () => {
 
 audio.addEventListener('ended', () => {
   btnPlay.innerHTML = '&#9654;';
+  // SoundCloud auto-advance
+  if (soundcloudMode && soundcloudActiveIdx >= 0) {
+    playSoundcloudTrack(soundcloudActiveIdx + 1);
+    return;
+  }
   const disc = currentDisc();
   if (!disc) return;
   if (repeatMode === 'one') {
@@ -1888,6 +2226,10 @@ window.addEventListener('beforeunload', () => {
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 btnPlay.addEventListener('click', () => {
+  if (spotifyPlayer && spotifyCurrentUri) {
+    spotifyPlayer.togglePlay().catch(() => {});
+    return;
+  }
   if (audio.paused) audio.play().catch(() => {});
   else audio.pause();
 });
@@ -2424,6 +2766,47 @@ if (spotifyDisconnectBtn) {
   });
 }
 
+// ── SoundCloud settings handlers ──────────────────────────────────────────────
+const soundcloudSaveCredsBtn       = document.getElementById('soundcloud-save-creds-btn');
+const soundcloudConnectSettingsBtn = document.getElementById('soundcloud-connect-settings-btn');
+const soundcloudDisconnectBtn      = document.getElementById('soundcloud-disconnect-btn');
+
+if (soundcloudSaveCredsBtn) {
+  soundcloudSaveCredsBtn.addEventListener('click', async () => {
+    const clientId     = (document.getElementById('soundcloud-client-id-input') || {}).value || '';
+    const clientSecret = (document.getElementById('soundcloud-client-secret-input') || {}).value || '';
+    const statusEl = document.getElementById('soundcloud-settings-status');
+    if (!clientId || !clientSecret) { if (statusEl) statusEl.textContent = 'Both fields required.'; return; }
+    try {
+      const res = await fetch('/api/soundcloud/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+      });
+      if (statusEl) statusEl.textContent = res.ok ? 'Credentials saved.' : 'Save failed.';
+    } catch (_) {
+      if (statusEl) statusEl.textContent = 'Save failed.';
+    }
+  });
+}
+
+if (soundcloudConnectSettingsBtn) {
+  soundcloudConnectSettingsBtn.addEventListener('click', async () => {
+    closeSettings();
+    await connectSoundcloud();
+  });
+}
+
+if (soundcloudDisconnectBtn) {
+  soundcloudDisconnectBtn.addEventListener('click', async () => {
+    await disconnectSoundcloud();
+    const statusEl = document.getElementById('soundcloud-settings-status');
+    if (statusEl) statusEl.textContent = 'Disconnected.';
+    const disconnectRow = document.getElementById('soundcloud-disconnect-row');
+    if (disconnectRow) disconnectRow.classList.add('hidden');
+  });
+}
+
 // ── Mini player ───────────────────────────────────────────────────────────────
 let isMini = false;
 
@@ -2514,7 +2897,7 @@ function initPanelResize() {
   panelResize.addEventListener('mousedown', (e) => {
     e.preventDefault();
     startY = e.clientY;
-    startH = folderBrowser.offsetHeight;
+    startH = soundcloudMode ? soundcloudBrowser.offsetHeight : spotifyMode ? spotifyBrowser.offsetHeight : folderBrowser.offsetHeight;
     panelResize.classList.add('dragging');
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'row-resize';
@@ -2529,6 +2912,8 @@ function initPanelResize() {
     const pct = Math.round((newH / available) * 100);
     document.documentElement.style.setProperty('--browser-height', `${newH}px`);
     folderBrowser.style.height = `${newH}px`;
+    spotifyBrowser.style.height = `${newH}px`;
+    soundcloudBrowser.style.height = `${newH}px`;
     STORAGE.setBrowserH(pct);
   });
 
@@ -2933,8 +3318,9 @@ async function init() {
     waveformRenderer.tick(audio.currentTime);
   }());
 
-  // Init Spotify integration
+  // Init Spotify + SoundCloud integrations
   initSpotify().catch(() => {});
+  initSoundcloud().catch(() => {});
 
   // Restore last dir + scan position + filter — fetch config and library in parallel
   try {

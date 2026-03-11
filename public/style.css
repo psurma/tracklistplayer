@@ -1308,8 +1308,8 @@ body.darwin #dir-bar { padding-left: 76px; }
 .spotify-pl-count { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
 .spotify-pl-loading { padding: 16px 12px; font-size: 11px; color: var(--text-muted); text-align: center; }
 
-/* ── NFO pane Spotify tab ─────────────────────── */
-#nfo-tab-spotify {
+/* ── Sidebar Spotify tracks panel ───────────────── */
+#spotify-tracks-panel {
   flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
 }
 #spotify-tracks-header {
@@ -1362,6 +1362,108 @@ body.darwin #dir-bar { padding-left: 76px; }
 }
 .spotify-track-duration { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
 .spotify-loading { padding: 20px 16px; font-size: 12px; color: var(--text-muted); text-align: center; }
+.spotify-quota-notice { padding: 16px; font-size: 12px; color: var(--text-muted); display: flex; flex-direction: column; gap: 8px; }
+.spotify-quota-notice p { margin: 0; }
+.spotify-quota-notice button { align-self: flex-start; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); padding: 6px 14px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.spotify-quota-notice button:hover { opacity: 0.85; }
+
+/* ── SoundCloud mode button ─────────────────── */
+#soundcloud-btn {
+  background: #f50;
+  border-color: #f50;
+  color: #fff;
+  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  border: 2px solid #f50;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+#soundcloud-btn:hover { background: #ff7033; border-color: #ff7033; }
+#soundcloud-btn.active { background: #ff7033 !important; border-color: #ff7033 !important; }
+
+/* ── SoundCloud browser (upper sidebar) ─────── */
+#soundcloud-browser {
+  height: var(--browser-height);
+  min-height: 60px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+#soundcloud-browser::-webkit-scrollbar { width: 4px; }
+#soundcloud-browser::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+#soundcloud-browser-prompt {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; padding: 16px;
+}
+.soundcloud-browser-card { text-align: center; }
+.soundcloud-browser-card p { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; line-height: 1.4; }
+.soundcloud-browser-hint { color: var(--text-muted) !important; font-size: 10px !important; }
+#soundcloud-browser-connect-btn {
+  background: #f50; border: none; border-radius: 12px;
+  color: #fff; cursor: pointer; font-family: inherit;
+  font-size: 11px; font-weight: 700; padding: 6px 18px; margin-top: 8px;
+}
+#soundcloud-browser-connect-btn:hover { background: #ff7033; }
+
+.soundcloud-pl-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; font-size: 11px; color: var(--text-dim);
+  cursor: pointer; border-left: 2px solid transparent;
+}
+.soundcloud-pl-item:hover { background: var(--highlight); color: var(--text); }
+.soundcloud-pl-item.soundcloud-pl-active { color: #f50; border-left-color: #f50; background: var(--active); }
+.soundcloud-pl-icon { flex-shrink: 0; font-size: 10px; color: var(--text-muted); width: 14px; text-align: center; }
+.soundcloud-pl-item.soundcloud-pl-active .soundcloud-pl-icon { color: #f50; }
+.soundcloud-pl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soundcloud-pl-count { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+
+/* ── SoundCloud tracks panel (lower sidebar) ── */
+#soundcloud-tracks-panel {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+}
+#soundcloud-tracks-list { flex: 1; overflow-y: auto; }
+#soundcloud-tracks-list::-webkit-scrollbar { width: 4px; }
+#soundcloud-tracks-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+#soundcloud-tracks-footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+#soundcloud-tracks-load-more-btn {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text-dim); cursor: pointer; font-family: inherit; font-size: 11px;
+  padding: 5px 14px; width: 100%;
+}
+#soundcloud-tracks-load-more-btn:hover { color: #f50; border-color: #f50; }
+
+.soundcloud-track-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 16px; cursor: pointer;
+  border-left: 2px solid transparent;
+  font-size: 12px;
+}
+.soundcloud-track-item:hover { background: var(--highlight); }
+.soundcloud-track-item.soundcloud-track-active {
+  background: var(--active); border-left-color: #f50;
+}
+.soundcloud-track-item.soundcloud-track-active .soundcloud-track-title { color: #f50; }
+.soundcloud-play-icon { font-size: 9px; color: var(--text-muted); flex-shrink: 0; width: 12px; text-align: center; }
+.soundcloud-track-item:hover .soundcloud-play-icon { color: var(--text); }
+.soundcloud-track-info { flex: 1; min-width: 0; }
+.soundcloud-track-title { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.soundcloud-track-artist { color: var(--text-muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.soundcloud-track-duration { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+.soundcloud-loading { padding: 20px 16px; font-size: 12px; color: var(--text-muted); text-align: center; }
 
 /* ── Settings: Spotify inputs ────────────────── */
 .settings-input-row { margin-top: 8px; }

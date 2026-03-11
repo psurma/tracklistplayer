@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.15.1] - 2026-03-11
+
+### Fixed
+- SoundCloud full-track streaming: removed OAuth token from v2 API calls; using web client_id with browser-like headers (Origin/Referer) now returns full CDN URLs (`cf-media.sndcdn.com`) instead of 30-second previews (`cf-preview-media.sndcdn.com/preview/0/30/`)
+
+## [1.15.0] - 2026-03-10
+
+### Added
+- SoundCloud liked tracks integration: OAuth flow, credential storage, and liked track browser in the sidebar
+- SC button in toolbar-left opens the SoundCloud sidebar panel (orange brand color)
+- Server-side proxy endpoints: `/api/soundcloud/liked`, `/api/soundcloud/stream/:id`, `/auth/soundcloud/callback`, status, refresh, config, credentials, disconnect
+- SoundCloud playback via the existing `<audio>` element — no additional SDK required
+- Auto-advance to next liked track when a SoundCloud track ends
+- Mutual exclusion with Spotify: opening one mode closes the other
+- SoundCloud settings section in Settings modal with Client ID/Secret inputs and Connect/Disconnect buttons
+- Load More pagination for liked tracks using SoundCloud's cursor-based `linked_partitioning` API
+
+## [1.14.4] - 2026-03-10
+
+### Changed
+- Playlist tracks show a "Play playlist" button instead of an error when Spotify's API restricts track listing (Development Mode limitation)
+- Added `playSpotifyContext()` to play an entire playlist as a Spotify context URI
+
+## [1.14.3] - 2026-03-10
+
+### Changed
+- Playlist tracks now show a clear message explaining Spotify's Extended Quota restriction instead of a generic error
+- Removed diagnostic debug endpoints
+- "Could not load playlists" now shows the actual error reason
+
+## [1.14.2] - 2026-03-10
+
+### Fixed
+- Play/pause button now toggles the Spotify player when a Spotify track is active, instead of starting/stopping local audio
+- Added `show_dialog=true` to Spotify OAuth URL so re-authorizing always shows the full consent screen with updated scopes
+- Improved Spotify playlist-tracks error logging (server logs full Spotify response body)
+
+## [1.14.1] - 2026-03-10
+
+### Fixed
+- Spotify tracks list moved from the central NFO pane to the lower-left disc list area (sidebar), matching the intended layout
+- Removed the SPOTIFY tab from the NFO pane entirely — Spotify playlists stay upper-left, tracks stay lower-left
+- Added `playlist-read-private` and `playlist-read-collaborative` OAuth scopes so "Could not load playlists" error is resolved (requires re-authenticating Spotify)
+- Panel resize handle now works correctly in Spotify mode (resizes the `#spotify-browser` upper panel)
+
 ## [1.14.0] - 2026-03-10
 
 ### Changed
