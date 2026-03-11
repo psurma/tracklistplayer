@@ -506,6 +506,8 @@ document.getElementById('nfo-tabs').addEventListener('click', (e) => {
 });
 
 function setNfoPaneVisible(visible) {
+  // Don't touch the pane while in streaming mode — it's controlled by enterStreamingInfoMode
+  if (soundcloudMode || spotifyMode) return;
   nfoPane.classList.toggle('hidden', !visible);
   // Show artwork in the NFO slot when NFO is closed (if artwork is loaded)
   artworkPane.classList.toggle('hidden', visible || !currentArtworkUrl);
@@ -688,6 +690,7 @@ tracklistContent.addEventListener('click', (e) => {
 });
 
 async function showNfo(dir) {
+  if (soundcloudMode || spotifyMode) return;
   try {
     const res = await fetch(`/api/nfo?dir=${encodeURIComponent(dir)}`);
     if (!res.ok) {

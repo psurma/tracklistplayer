@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.15.6] - 2026-03-11
+
+### Fixed
+- In SC/Spotify mode, local NFO content no longer bleeds into the info pane: `setNfoPaneVisible` and `showNfo` now no-op while a streaming mode is active
+
 ## [1.15.5] - 2026-03-11
 
 ### Added
