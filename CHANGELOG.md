@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.7] - 2026-03-11
+
+### Fixed
+- Filter/search bar now works in SoundCloud and Spotify modes, filtering track items by title and artist
+- Filter is re-applied automatically when new tracks load (including Load More)
+- Filter is cleared when switching between local/SC/Spotify modes to avoid stale state
+
 ## [1.15.6] - 2026-03-11
 
 ### Fixed

@@ -275,6 +275,28 @@ function applyFilter(query) {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   filterClear.classList.toggle('hidden', words.length === 0);
 
+  // SoundCloud mode: filter track list by title + artist
+  if (soundcloudMode) {
+    soundcloudTracksList.querySelectorAll('.soundcloud-track-item').forEach((item) => {
+      const track = soundcloudTracks[Number(item.dataset.idx)];
+      if (!track) return;
+      const hay = `${track.title || ''} ${track.user ? track.user.username : ''}`.toLowerCase();
+      item.classList.toggle('filter-hidden', words.length > 0 && !words.every((w) => hay.includes(w)));
+    });
+    return;
+  }
+
+  // Spotify mode: filter track list by title + artist
+  if (spotifyMode) {
+    spotifyTracksList.querySelectorAll('.spotify-track-item').forEach((item) => {
+      const title  = (item.querySelector('.spotify-track-title')  || {}).textContent || '';
+      const artist = (item.querySelector('.spotify-track-artist') || {}).textContent || '';
+      const hay = `${title} ${artist}`.toLowerCase();
+      item.classList.toggle('filter-hidden', words.length > 0 && !words.every((w) => hay.includes(w)));
+    });
+    return;
+  }
+
   folderBrowser.querySelectorAll('.folder-item').forEach((item) => {
     const name = item.dataset.name || '';
     const nameLower = name.toLowerCase();
@@ -1632,6 +1654,8 @@ function updateSpotifyUI() {
 
 function openSpotifyMode() {
   if (soundcloudMode) closeSoundcloudMode();
+  filterInput.value = '';
+  filterClear.classList.add('hidden');
   spotifyMode = true;
   spotifyBtn.classList.add('active');
   spotifyBtn.title = 'Exit Spotify mode';
@@ -1758,6 +1782,9 @@ async function loadSpotifyTracks(source, offset) {
       frag.appendChild(el);
     }
     spotifyTracksList.appendChild(frag);
+
+    // Re-apply any active filter to newly rendered tracks
+    if (filterInput.value) applyFilter(filterInput.value);
 
     if (spotifyTracksOffset < spotifyTracksTotal) {
       spotifyTracksFooter.classList.remove('hidden');
@@ -2046,6 +2073,8 @@ function loadSoundcloudPlaylistTracks(pl) {
 
 function openSoundcloudMode() {
   if (spotifyMode) closeSpotifyMode();
+  filterInput.value = '';
+  filterClear.classList.add('hidden');
   soundcloudMode = true;
   soundcloudBtn.classList.add('active');
   soundcloudBtn.title = 'Exit SoundCloud mode';
@@ -2118,6 +2147,9 @@ async function loadSoundcloudTracks(nextHref) {
     soundcloudTracksList.appendChild(frag);
 
     soundcloudTracksFooter.classList.toggle('hidden', !soundcloudNextHref);
+
+    // Re-apply any active filter to newly rendered tracks
+    if (filterInput.value) applyFilter(filterInput.value);
 
     // Restore session: play the saved track once the first page of tracks is loaded
     if (pendingScRestore && !nextHref) {
