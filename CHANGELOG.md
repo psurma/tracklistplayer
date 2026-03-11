@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.15.4] - 2026-03-11
+
+### Added
+- Session restore for SoundCloud and Spotify: on quit the current track and position are saved to `localStorage`; on next launch the app re-enters the streaming mode and resumes from where it left off
+- SoundCloud: position saved every ~10 s during `timeupdate` and immediately on `pause`; restored after the first page of liked tracks loads
+- Spotify: URI + position (ms) saved on every `player_state_changed` while playing; restored via `PUT /v1/me/player/play` with `position_ms` once the SDK player is ready
+- Switching back to local music (⌂ button or re-clicking the active SC/Spotify button) clears the saved stream session
+
 ## [1.15.3] - 2026-03-11
 
 ### Added

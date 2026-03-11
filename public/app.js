@@ -180,6 +180,9 @@ const STORAGE = {
   setSpectrumRes: (v) => localStorage.setItem('tlp_spectrum_res', String(v)),
   getTrackLabels: ()  => localStorage.getItem('tlp_track_labels') !== 'off',
   setTrackLabels: (v) => localStorage.setItem('tlp_track_labels', v ? 'on' : 'off'),
+  getStreamSession: ()  => JSON.parse(localStorage.getItem('tlp_stream_session') || 'null'),
+  setStreamSession: (v) => localStorage.setItem('tlp_stream_session', JSON.stringify(v)),
+  clearStreamSession: () => localStorage.removeItem('tlp_stream_session'),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1494,6 +1497,7 @@ let spotifyWasPlaying = false; // tracks previous paused state for end-of-track 
 let spotifyCurrentUri = null;  // URI of the currently loaded Spotify track
 let spotifySDKReady = false;
 let spotifySDKPendingToken = null;
+let pendingSpotifyRestore = null; // { uri, position } set during startup restore
 
 // Must be defined synchronously at module scope — the SDK script is async and may
 // call this before initSpotify() has a chance to set it.
@@ -1543,6 +1547,18 @@ function initSpotifySDK(token) {
   });
   spotifyPlayer.addListener('ready', ({ device_id }) => {
     spotifyDeviceId = device_id;
+    // Restore session if one was pending (set during init)
+    if (pendingSpotifyRestore) {
+      const { uri, position } = pendingSpotifyRestore;
+      pendingSpotifyRestore = null;
+      getSpotifyToken().then((tok) => {
+        fetch(`https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(device_id)}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${tok}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uris: [uri], position_ms: position || 0 }),
+        }).catch(() => {});
+      }).catch(() => {});
+    }
   });
   spotifyPlayer.addListener('player_state_changed', (playerState) => {
     if (!playerState) return;
@@ -1572,6 +1588,11 @@ function initSpotifySDK(token) {
 
     // Populate streaming info pane with Spotify track metadata
     showSpotifyTrackInfo(item);
+
+    // Save Spotify session for restore on next launch
+    if (!playerState.paused) {
+      STORAGE.setStreamSession({ mode: 'spotify', uri: item.uri, position: playerState.position });
+    }
 
     // Auto-advance to the next track when the current one finishes
     if (justEnded) {
@@ -1632,6 +1653,7 @@ function closeSpotifyMode() {
   exitStreamingInfoMode();
   liveSpectrum.stop();
   liveSpectrumWrap.classList.add('hidden');
+  STORAGE.clearStreamSession();
 }
 
 async function loadSpotifyPlaylists() {
@@ -1922,6 +1944,7 @@ let soundcloudTracks      = [];
 let soundcloudNextHref    = null;
 let soundcloudActiveIdx   = -1;
 let soundcloudActiveSource = 'liked';
+let pendingScRestore      = null; // { trackIdx, position } set during startup restore
 
 const soundcloudBtn               = document.getElementById('soundcloud-btn');
 const soundcloudBrowser           = document.getElementById('soundcloud-browser');
@@ -2042,6 +2065,7 @@ function closeSoundcloudMode() {
   exitStreamingInfoMode();
   liveSpectrum.stop();
   liveSpectrumWrap.classList.add('hidden');
+  STORAGE.clearStreamSession();
 }
 
 async function loadSoundcloudTracks(nextHref) {
@@ -2087,6 +2111,19 @@ async function loadSoundcloudTracks(nextHref) {
     soundcloudTracksList.appendChild(frag);
 
     soundcloudTracksFooter.classList.toggle('hidden', !soundcloudNextHref);
+
+    // Restore session: play the saved track once the first page of tracks is loaded
+    if (pendingScRestore && !nextHref) {
+      const { trackIdx, position } = pendingScRestore;
+      pendingScRestore = null;
+      if (soundcloudTracks[trackIdx]) {
+        playSoundcloudTrack(trackIdx);
+        audio.addEventListener('canplay', function seekOnce() {
+          audio.removeEventListener('canplay', seekOnce);
+          audio.currentTime = position || 0;
+        });
+      }
+    }
   } catch (err) {
     soundcloudTracksList.innerHTML = `<div class="soundcloud-loading" style="color:#c06060">Error: ${escapeHtml(err.message)}</div>`;
   }
@@ -2311,6 +2348,10 @@ audio.addEventListener('timeupdate', () => {
   if (!savePlayStateTimer) {
     savePlayStateTimer = setTimeout(() => {
       savePlayStateTimer = null;
+      if (soundcloudMode && soundcloudActiveIdx >= 0) {
+        STORAGE.setStreamSession({ mode: 'soundcloud', trackIdx: soundcloudActiveIdx, position: audio.currentTime });
+        return;
+      }
       const disc = currentDisc();
       if (disc && disc.mp3Path) {
         STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
@@ -2329,6 +2370,10 @@ audio.addEventListener('loadedmetadata', () => {
 audio.addEventListener('play',  () => { btnPlay.innerHTML = '&#9646;&#9646;'; });
 audio.addEventListener('pause', () => {
   btnPlay.innerHTML = '&#9654;';
+  if (soundcloudMode && soundcloudActiveIdx >= 0) {
+    STORAGE.setStreamSession({ mode: 'soundcloud', trackIdx: soundcloudActiveIdx, position: audio.currentTime });
+    return;
+  }
   const disc = currentDisc();
   if (disc && disc.mp3Path) {
     STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
@@ -3471,9 +3516,24 @@ async function init() {
     waveformRenderer.tick(audio.currentTime);
   }());
 
-  // Init Spotify + SoundCloud integrations
-  initSpotify().catch(() => {});
-  initSoundcloud().catch(() => {});
+  // Init Spotify + SoundCloud integrations, then check for session restore
+  const [,] = await Promise.all([
+    initSpotify().catch(() => {}),
+    initSoundcloud().catch(() => {}),
+  ]);
+
+  const streamSession = STORAGE.getStreamSession();
+  if (streamSession) {
+    if (streamSession.mode === 'soundcloud' && soundcloudConnected) {
+      pendingScRestore = { trackIdx: streamSession.trackIdx, position: streamSession.position };
+      openSoundcloudMode(); // loads tracks; restore fires inside loadSoundcloudTracks
+    } else if (streamSession.mode === 'spotify' && spotifyConnected) {
+      pendingSpotifyRestore = { uri: streamSession.uri, position: streamSession.position };
+      openSpotifyMode(); // SDK ready listener will trigger playback
+    } else {
+      STORAGE.clearStreamSession(); // service no longer connected — discard
+    }
+  }
 
   // Restore last dir + scan position + filter — fetch config and library in parallel
   try {
