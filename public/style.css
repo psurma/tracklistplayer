@@ -984,6 +984,8 @@ a.nfo-link:hover { color: #9ecfff; }
   font-size: 11px; color: var(--text-muted); z-index: 2;
   pointer-events: none;
 }
+#live-spectrum-wrap { height: 160px; width: 100%; overflow: hidden; }
+#live-spectrum-wrap canvas { display: block; width: 100%; height: 100%; }
 
 /* macOS: push first sidebar row right so traffic lights don't overlap */
 body.darwin #dir-bar { padding-left: 76px; }

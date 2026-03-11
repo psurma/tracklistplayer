@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.2] - 2026-03-11
+
+### Added
+- Live spectrum analyzer for SoundCloud and Spotify: real-time FFT bars drawn via Web Audio API AnalyserNode, shown in the waveform section when streaming music is playing
+- `spectrum.js` — `LiveSpectrumRenderer` class; connects to the `<audio>` element (SoundCloud) or the Spotify SDK's injected audio element, renders frequency bars with green gradient
+- Waveform visibility toggle now also controls the live spectrum for streaming sources
+
 ## [1.15.1] - 2026-03-11
 
 ### Fixed

@@ -32,6 +32,32 @@ const waveformRenderer = new WaveformRenderer(
   }
 );
 
+// ── Live spectrum renderer (for streaming sources) ────────────────────────────
+const liveSpectrumWrap = document.getElementById('live-spectrum-wrap');
+const liveSpectrumCanvas = document.getElementById('live-spectrum');
+const liveSpectrum = new LiveSpectrumRenderer(liveSpectrumCanvas);
+
+function showLiveSpectrum() {
+  // Show waveform section with live spectrum canvas; hide static wf canvases
+  wfSection.classList.remove('hidden');
+  document.getElementById('wf-overview-wrap').classList.add('hidden');
+  document.getElementById('wf-resize-mid').classList.add('hidden');
+  document.getElementById('wf-zoom-wrap').classList.add('hidden');
+  document.getElementById('wf-resize-bot').classList.add('hidden');
+  liveSpectrumWrap.classList.remove('hidden');
+  liveSpectrum.connectAudioElement(audio);
+  liveSpectrum.start();
+}
+
+function hideLiveSpectrum() {
+  liveSpectrum.stop();
+  liveSpectrumWrap.classList.add('hidden');
+  document.getElementById('wf-overview-wrap').classList.remove('hidden');
+  document.getElementById('wf-resize-mid').classList.remove('hidden');
+  document.getElementById('wf-zoom-wrap').classList.remove('hidden');
+  document.getElementById('wf-resize-bot').classList.remove('hidden');
+}
+
 let currentArtworkPath = null;
 let currentArtworkUrl  = null;
 function loadArtwork(disc) {
@@ -67,6 +93,7 @@ let currentWfPath = null;
 async function loadWaveform(disc) {
   if (!disc.mp3Path || disc.mp3Path === currentWfPath) return;
   currentWfPath = disc.mp3Path;
+  hideLiveSpectrum();
   if (waveformVisible) wfSection.classList.remove('hidden');
   wfStatus.classList.remove('hidden');
   waveformRenderer.clear();
@@ -1444,6 +1471,18 @@ function initSpotifySDK(token) {
     });
     btnPlay.innerHTML = playerState.paused ? '&#9654;' : '&#9646;&#9646;';
 
+    // Show live spectrum when Spotify starts playing — find SDK's <audio> element
+    if (!playerState.paused && waveformVisible) {
+      // The Spotify Web Playback SDK injects its own <audio> element into the DOM
+      const spotifyAudio = [...document.querySelectorAll('audio')].find((el) => el !== audio);
+      if (spotifyAudio) {
+        liveSpectrum.connectAudioElement(spotifyAudio);
+        waveformRenderer.clear();
+        currentWfPath = null;
+        showLiveSpectrum();
+      }
+    }
+
     // Auto-advance to the next track when the current one finishes
     if (justEnded) {
       const items = [...spotifyTracksList.querySelectorAll('.spotify-track-item')];
@@ -1971,7 +2010,7 @@ async function playSoundcloudTrack(idx) {
   npSection.style.removeProperty('--artwork');
   currentWfPath = null;
   waveformRenderer.clear();
-  wfSection.classList.add('hidden');
+  showLiveSpectrum();
 
   audio.src = `/api/soundcloud/stream/${encodeURIComponent(track.id)}`;
   audio.play().catch(() => {});
@@ -2539,6 +2578,7 @@ function setWaveformVisible(on) {
   STORAGE.setWaveformOn(on);
   waveformToggle.classList.toggle('off', !on);
   if (!on) {
+    liveSpectrum.stop();
     wfSection.classList.add('hidden');
     // Let main-top shrink to now-playing only so the info pane fills the gap
     mainTop.style.height = '';
@@ -2547,6 +2587,9 @@ function setWaveformVisible(on) {
   // Restore saved height when turning back on
   const saved = STORAGE.getMainTopH();
   if (saved) mainTop.style.height = `${saved}px`;
+  // If in streaming mode, restart live spectrum
+  if (soundcloudMode && soundcloudActiveIdx >= 0) { showLiveSpectrum(); return; }
+  if (spotifyMode && spotifyCurrentUri) { showLiveSpectrum(); return; }
   // Turning on: load or re-render for current disc
   const disc = currentDisc();
   if (!disc || !disc.mp3Path) return;
