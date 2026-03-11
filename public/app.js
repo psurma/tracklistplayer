@@ -548,7 +548,7 @@ function formatDurationMs(ms) {
   return `${m}:${String(sec).padStart(2,'0')}`;
 }
 
-function renderStreamInfo(rows, description) {
+function renderStreamInfo(rows, description, pageUrl) {
   const escFn = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const linkify = (text) => escFn(text).replace(
     /https?:\/\/[^\s<>"]+/g,
@@ -558,6 +558,10 @@ function renderStreamInfo(rows, description) {
   for (const [label, value] of rows) {
     if (!value) continue;
     html += `<tr><th>${escFn(label)}</th><td>${escFn(String(value))}</td></tr>`;
+  }
+  if (pageUrl) {
+    const clean = pageUrl.replace(/[?&]utm_[^&]*/g, '').replace(/[?&]$/, '');
+    html += `<tr><th>Link</th><td><a class="nfo-link" href="${escFn(clean)}" target="_blank" rel="noopener noreferrer">${escFn(clean)}</a></td></tr>`;
   }
   html += '</table>';
   if (description && description.trim()) {
@@ -584,7 +588,7 @@ function showSoundcloudTrackInfo(track) {
     ['Likes',   favs],
     ['Released', date],
     ['Label',   track.label_name],
-  ], track.description);
+  ], track.description, track.permalink_url);
 }
 
 function showSpotifyTrackInfo(item) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.15.5] - 2026-03-11
+
+### Added
+- SoundCloud track info pane now shows a Link row with a clickable URL to the track page (utm tracking params stripped)
+
 ## [1.15.4] - 2026-03-11
 
 ### Added
