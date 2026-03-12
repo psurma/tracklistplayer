@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.8] - 2026-03-12
+
+### Security
+- **H1 (Path Traversal)**: All file-serving endpoints (`/file`, `/api/artwork`, `/api/waveform`, `/api/detect-transitions`, `/api/nfo`, `/api/scan`, `/api/reveal`) now validate that the requested path falls within a registered library root using `resolveAndValidate()`; arbitrary filesystem reads are rejected with 400
+- **H1**: `/file` endpoint now also enforces an audio file extension whitelist (`.mp3 .flac .m4a .aac .ogg .wav .opus .wma .cue`)
+- **H2 (SSRF)**: `/api/soundcloud/liked` now validates that the `next_href` cursor starts with `https://api.soundcloud.com/` before forwarding the request
+- **M1**: Express server now binds to `127.0.0.1` instead of `0.0.0.0`, preventing access from other network hosts
+- **M2**: Removed `cors` middleware — wildcard CORS headers are no longer sent; requests are same-origin only
+- **M4 (OAuth CSRF)**: Spotify and SoundCloud auth-url endpoints now generate a `crypto.randomBytes(16)` state token stored server-side; the OAuth callback validates and consumes the token before proceeding
+- **L4**: OAuth config files (`spotify.json`, `soundcloud.json`) are now written with `mode: 0o600` (owner read/write only)
+- **M5**: Removed verbose CDN URL logging from the SoundCloud stream proxy to prevent token/URL leakage in server logs
+
 ## [1.15.7] - 2026-03-11
 
 ### Fixed

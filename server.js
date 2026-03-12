@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const cors = require('cors');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -10,9 +10,24 @@ const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
 const app = express();
 const PORT = 3123;
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Path safety helper ────────────────────────────────────────────────────────
+// Returns the resolved absolute path only if it falls within one of the allowed roots.
+// Returns null if the path escapes all roots (path traversal attempt).
+const AUDIO_FILE_EXTS = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus', '.wma', '.cue']);
+
+function resolveAndValidate(inputPath, allowedRoots) {
+  if (!inputPath) return null;
+  const resolved = path.resolve(inputPath);
+  if (!allowedRoots || allowedRoots.length === 0) return null;
+  const ok = allowedRoots.some((root) => {
+    const r = path.resolve(root);
+    return resolved === r || resolved.startsWith(r + path.sep);
+  });
+  return ok ? resolved : null;
+}
 
 // ── Library (multi-root folder collection) ────────────────────────────────────
 const TLP_DIR = path.join(os.homedir(), '.tracklistplayer');
@@ -87,7 +102,7 @@ async function readSpotifyConfig() {
 async function writeSpotifyConfig(data) {
   const dir = path.dirname(SPOTIFY_CONFIG_PATH);
   await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(SPOTIFY_CONFIG_PATH, JSON.stringify(data, null, 2));
+  await fs.promises.writeFile(SPOTIFY_CONFIG_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 async function refreshSpotifyToken(config) {
@@ -127,11 +142,16 @@ app.post('/api/spotify/credentials', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Pending OAuth state tokens — prevent CSRF on callbacks (M4)
+const pendingSpotifyStates = new Map();
+const pendingSoundcloudStates = new Map();
+
 // GET /api/spotify/auth-url — generate Spotify authorize URL
 app.get('/api/spotify/auth-url', async (req, res) => {
   const config = await readSpotifyConfig();
   if (!config.client_id) return res.status(400).json({ error: 'No client_id configured' });
-  const state = Math.random().toString(36).slice(2);
+  const state = crypto.randomBytes(16).toString('hex');
+  pendingSpotifyStates.set(state, Date.now() + 10 * 60 * 1000); // 10 min TTL
   const url = `https://accounts.spotify.com/authorize?response_type=code`
     + `&client_id=${encodeURIComponent(config.client_id)}`
     + `&scope=${encodeURIComponent(SPOTIFY_SCOPES)}`
@@ -143,9 +163,12 @@ app.get('/api/spotify/auth-url', async (req, res) => {
 
 // GET /auth/spotify/callback — receive OAuth code, exchange for tokens
 app.get('/auth/spotify/callback', async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
   if (error) return res.send(`<!DOCTYPE html><html><head><title>Spotify Auth</title></head><body style="font-family:sans-serif;background:#191414;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div><h2 style="color:#e05050">Auth failed</h2><p>${serverEscapeHtml(String(error))}</p></div></body></html>`);
   if (!code) return res.status(400).send('No code');
+  const stateExpiry = state && pendingSpotifyStates.get(state);
+  if (!stateExpiry || Date.now() > stateExpiry) return res.status(400).send('Invalid or expired state');
+  pendingSpotifyStates.delete(state);
 
   const config = await readSpotifyConfig();
   if (!config.client_id || !config.client_secret) return res.status(400).send('Spotify credentials not configured');
@@ -322,7 +345,7 @@ app.get('/api/spotify/disconnect', async (req, res) => {
 // Scans the given dir + one level of subdirs for MP3/CUE pairs.
 // Results are cached in memory; pass bust=1 to force a fresh scan.
 app.get('/api/scan', async (req, res) => {
-  const dir = req.query.dir;
+  const dir = resolveAndValidate(req.query.dir, readLibrary());
   if (!dir) {
     return res.status(400).json({ error: 'dir query parameter required' });
   }
@@ -440,7 +463,7 @@ app.get('/api/ls-stream', async (req, res) => {
 
 // GET /api/nfo?dir=<path> — find and return NFO file in dir, decoded from CP437
 app.get('/api/nfo', async (req, res) => {
-  const dir = req.query.dir;
+  const dir = resolveAndValidate(req.query.dir, readLibrary());
   if (!dir) return res.status(400).json({ error: 'dir required' });
 
   try {
@@ -593,7 +616,7 @@ async function getOrComputeWaveform(filePath, bucketMs) {
 // GET /api/waveform?path=<absolute mp3 path>
 // Uses ffmpeg to decode audio at low sample rate, returns per-bucket amplitude + frequency data
 app.get('/api/waveform', async (req, res) => {
-  const filePath = req.query.path;
+  const filePath = resolveAndValidate(req.query.path, readLibrary());
   if (!filePath) return res.status(400).json({ error: 'path required' });
 
   const bucketMs = Math.max(25, Math.min(200, parseInt(req.query.bucketMs, 10) || 100));
@@ -612,7 +635,7 @@ app.get('/api/waveform', async (req, res) => {
 // Analyses waveform energy to find N-1 likely track transition points.
 // count = number of tracks from NFO (0 = return all detected minima)
 app.get('/api/detect-transitions', async (req, res) => {
-  const filePath = req.query.path;
+  const filePath = resolveAndValidate(req.query.path, readLibrary());
   if (!filePath) return res.status(400).json({ error: 'path required' });
 
   const count    = parseInt(req.query.count, 10) || 0;
@@ -920,7 +943,7 @@ const artworkCache = new Map();
 // GET /api/artwork?path=<absolute mp3 path>
 // Returns album art: checks folder for common image files first, then ffmpeg embedded art
 app.get('/api/artwork', async (req, res) => {
-  const filePath = req.query.path;
+  const filePath = resolveAndValidate(req.query.path, readLibrary());
   if (!filePath) return res.status(400).end();
 
   if (artworkCache.has(filePath)) {
@@ -1011,7 +1034,7 @@ app.get('/api/artwork', async (req, res) => {
 
 // GET /api/reveal?path=<absolute path> — reveal file in the OS file manager
 app.get('/api/reveal', (req, res) => {
-  const target = req.query.path;
+  const target = resolveAndValidate(req.query.path, readLibrary());
   if (!target) return res.status(400).json({ error: 'path required' });
   const { spawn } = require('child_process');
   const plat = process.platform;
@@ -1028,9 +1051,14 @@ app.get('/api/reveal', (req, res) => {
 
 // GET /file?path=<absolute encoded path> — stream MP3 with range support
 app.get('/file', (req, res) => {
-  const filePath = req.query.path;
+  const filePath = resolveAndValidate(req.query.path, readLibrary());
   if (!filePath) {
     return res.status(400).send('path query parameter required');
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  if (!AUDIO_FILE_EXTS.has(ext)) {
+    return res.status(400).send('File type not allowed');
   }
 
   if (!fs.existsSync(filePath)) {
@@ -1044,7 +1072,6 @@ app.get('/file', (req, res) => {
   const MIME = { '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4',
     '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
     '.opus': 'audio/ogg; codecs=opus', '.wma': 'audio/x-ms-wma' };
-  const ext = path.extname(filePath).toLowerCase();
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Type', MIME[ext] || 'audio/mpeg');
 
@@ -1069,8 +1096,8 @@ app.get('/file', (req, res) => {
 // CLI: optional directory argument
 const cliDir = process.argv[2];
 
-const server = app.listen(PORT, () => {
-  console.log(`Tracklist Player running at http://localhost:${PORT}`);
+const server = app.listen(PORT, '127.0.0.1', () => {
+  console.log(`Tracklist Player running at http://127.0.0.1:${PORT}`);
   if (cliDir) {
     console.log(`Auto-loading directory: ${cliDir}`);
   } else {
@@ -1246,7 +1273,7 @@ async function readSoundcloudConfig() {
 async function writeSoundcloudConfig(data) {
   const dir = path.dirname(SOUNDCLOUD_CONFIG_PATH);
   await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(SOUNDCLOUD_CONFIG_PATH, JSON.stringify(data, null, 2));
+  await fs.promises.writeFile(SOUNDCLOUD_CONFIG_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 async function refreshSoundcloudToken(config) {
@@ -1291,20 +1318,26 @@ app.post('/api/soundcloud/credentials', async (req, res) => {
 app.get('/api/soundcloud/auth-url', async (_req, res) => {
   const config = await readSoundcloudConfig();
   if (!config.client_id) return res.status(400).json({ error: 'No client_id configured' });
+  const state = crypto.randomBytes(16).toString('hex');
+  pendingSoundcloudStates.set(state, Date.now() + 10 * 60 * 1000); // 10 min TTL
   const url = 'https://soundcloud.com/connect'
     + `?client_id=${encodeURIComponent(config.client_id)}`
     + `&redirect_uri=${encodeURIComponent(SOUNDCLOUD_REDIRECT_URI)}`
     + `&response_type=code`
     + `&scope=*`
+    + `&state=${state}`
     + `&display=popup`;
   res.json({ url });
 });
 
 // GET /auth/soundcloud/callback
 app.get('/auth/soundcloud/callback', async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
   if (error) return res.send(`<!DOCTYPE html><html><head><title>SoundCloud Auth</title></head><body style="font-family:sans-serif;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div><h2 style="color:#e05050">Auth failed</h2><p>${serverEscapeHtml(String(error))}</p></div></body></html>`);
   if (!code) return res.status(400).send('No code');
+  const stateExpiry = state && pendingSoundcloudStates.get(state);
+  if (!stateExpiry || Date.now() > stateExpiry) return res.status(400).send('Invalid or expired state');
+  pendingSoundcloudStates.delete(state);
   const config = await readSoundcloudConfig();
   if (!config.client_id || !config.client_secret) return res.status(400).send('SoundCloud credentials not configured');
   try {
@@ -1398,6 +1431,9 @@ app.get('/api/soundcloud/liked', async (req, res) => {
   }
   try {
     const nextHref = req.query.next_href;
+    if (nextHref && !nextHref.startsWith('https://api.soundcloud.com/')) {
+      return res.status(400).json({ error: 'Invalid next_href' });
+    }
     const url = nextHref
       ? nextHref
       : 'https://api.soundcloud.com/me/favorites?limit=50&linked_partitioning=1';
@@ -1427,20 +1463,15 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
   }
 
   const id = req.params.id;
-  const oauthHeaders = { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' };
 
   // Use cached CDN URL if still fresh
-  console.log('[SC stream] id=%s range=%s', id, req.headers.range || 'none');
-
   let cdnUrl = null;
   const cached = soundcloudCdnCache.get(id);
   if (cached && cached.expiresAt > Date.now()) {
     cdnUrl = cached.url;
-    console.log('[SC stream] cache hit');
   } else {
     // v2 API: find progressive (direct MP3) transcoding using web client_id
     const webCid = await getSoundcloudWebClientId();
-    console.log('[SC stream] web client_id:', webCid ? webCid.slice(0, 8) + '...' : 'none');
 
     if (webCid) {
       // Use browser-like headers WITHOUT OAuth token — mixing OAuth + web client_id causes 403
@@ -1455,23 +1486,17 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
           `https://api-v2.soundcloud.com/tracks/${encodeURIComponent(id)}?client_id=${encodeURIComponent(webCid)}`,
           { headers: browserHeaders }
         );
-        console.log('[SC stream] v2 status:', v2Res.status);
         if (v2Res.ok) {
           const td = await v2Res.json();
           const transcodings = (td.media && td.media.transcodings) || [];
-          console.log('[SC stream] transcodings:', transcodings.map((t) => `${t.format && t.format.protocol}/${t.format && t.format.mime_type}`).join(', '));
           const prog = transcodings.find((t) => t.format && t.format.protocol === 'progressive');
           if (prog && prog.url) {
             const resolveUrl = `${prog.url}${prog.url.includes('?') ? '&' : '?'}client_id=${encodeURIComponent(webCid)}`;
             const sr = await fetch(resolveUrl, { headers: browserHeaders });
-            console.log('[SC stream] resolve status:', sr.status);
             if (sr.ok) {
               const sd = await sr.json();
               cdnUrl = sd.url || null;
-              console.log('[SC stream] cdn url:', (cdnUrl || '').slice(0, 80) + '...');
             }
-          } else {
-            console.log('[SC stream] no progressive transcoding found');
           }
         }
       } catch (e) {
@@ -1482,7 +1507,6 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
     if (cdnUrl) {
       soundcloudCdnCache.set(id, { url: cdnUrl, expiresAt: Date.now() + 4 * 60 * 1000 });
     } else {
-      console.log('[SC stream] falling back to v1 (expect 30s preview for unverified apps)');
       try {
         const r = await fetch(
           `https://api.soundcloud.com/tracks/${encodeURIComponent(id)}/stream`,
@@ -1490,7 +1514,6 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
         );
         if (!r.ok) return res.status(r.status).json({ error: 'SoundCloud stream error' });
         cdnUrl = r.url;
-        console.log('[SC stream] v1 cdn url:', cdnUrl.slice(0, 80) + '...');
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1504,7 +1527,6 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
     const upstreamHeaders = {};
     if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
     https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: upstreamHeaders }, (upstream) => {
-      console.log('[SC stream] upstream status:', upstream.statusCode, 'cl:', upstream.headers['content-length'], 'ct:', upstream.headers['content-type']);
       const outHeaders = { 'Accept-Ranges': 'bytes' };
       if (upstream.headers['content-type']) outHeaders['Content-Type'] = upstream.headers['content-type'];
       if (upstream.headers['content-length']) outHeaders['Content-Length'] = upstream.headers['content-length'];
