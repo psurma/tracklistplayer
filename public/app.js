@@ -135,6 +135,14 @@ async function loadWaveform(disc) {
     if (!res.ok) throw new Error('waveform failed');
     const data = await res.json();
     const d = state.discs.find((x) => x.id === disc.id);
+
+    // Auto-apply NFO-derived tracks when disc has no CUE tracklist
+    if (d && !d.tracks.length && lastNfoParsedTracks && lastNfoParsedTracks.length >= 3) {
+      d.tracks = lastNfoParsedTracks.map((t, i) => ({ ...t, track: i + 1 }));
+      try { localStorage.setItem(`tlp_tl_${d.mp3Path}`, JSON.stringify(d.tracks)); } catch (_) {}
+      renderDiscList();
+    }
+
     fancyScrubber.load(data, d ? d.tracks : []);
     wfStatus.classList.add('hidden');
     const zoomSlider = document.getElementById('zoom-slider');
@@ -3379,22 +3387,38 @@ function parseNfoTracklist(text, mp3Path = null) {
   const entries = [];
   let m;
   while ((m = re.exec(parseText)) !== null) {
-    // Strip trailing duration (e.g. "  4:03" or "  1:22:05") from the captured title
-    const line = m[2].trim().replace(/\s+\d{1,2}:\d{2}(?::\d{2})?\s*$/, '').trim();
+    const raw = m[2].trim();
+    // Capture trailing duration before stripping it (M:SS or MM:SS or H:MM:SS)
+    const durMatch = raw.match(/\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*$/);
+    const durStr   = durMatch ? durMatch[1] : null;
+    const line     = raw.replace(/\s+\d{1,2}:\d{2}(?::\d{2})?\s*$/, '').trim();
     if (!line) continue;
-    entries.push({ num: parseInt(m[1], 10), line });
+    entries.push({ num: parseInt(m[1], 10), line, durStr });
   }
 
   if (entries.length < 3) return null;
   if (entries[0].num > 2) return null;
 
+  // Compute cumulative start times from the per-track durations
+  const parseDur = (s) => {
+    if (!s) return null;
+    const parts = s.split(':').map(Number);
+    return parts.length === 3
+      ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+      : parts[0] * 60 + parts[1];
+  };
+
+  let cumSecs = 0;
   return entries.map((e, i) => {
+    const startSeconds = cumSecs;
+    const trackSecs    = parseDur(e.durStr);
+    if (trackSecs !== null) cumSecs += trackSecs;
     const sepMatch = e.line.match(/^(.+?)\s+(?:–|—|-)\s+(.+)$/);
     return {
       track:        i + 1,
       performer:    sepMatch ? sepMatch[1].trim() : '',
       title:        sepMatch ? sepMatch[2].trim() : e.line,
-      startSeconds: null,
+      startSeconds,
     };
   });
 }

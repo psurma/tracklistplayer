@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.2] - 2026-03-14
+
+### Added
+- NFO tracks with per-track durations are now **automatically applied** to the waveform scrubber when a disc has no CUE sheet — no clicking required; cumulative start times are calculated from the NFO duration column and persisted to localStorage
+
 ## [1.17.1] - 2026-03-14
 
 ### Fixed
