@@ -394,21 +394,38 @@ class FancyScrubber {
     };
 
     if (this._panMode) {
-      // Pan mode: drag moves the viewport; click (< 4px) seeks
+      // Pan mode: drag moves the viewport; Cmd+drag zooms; click (< 4px) seeks
       let panStartX = 0;
       let panStartScroll = 0;
       let panMoved = false;
+      let zoomStartX = 0;
+      let zoomStartVis = 0;
+      let isZooming = false;
 
       canvas.addEventListener('mousedown', (e) => {
         if (!this.duration) return;
-        this._dragging = true;
-        panStartX = e.clientX;
-        panStartScroll = this._scrollSecs;
-        panMoved = false;
         document.body.style.userSelect = 'none';
+        if (e.metaKey) {
+          isZooming = true;
+          zoomStartX = e.clientX;
+          zoomStartVis = this.visibleSecs;
+          canvas.style.cursor = 'ew-resize';
+        } else {
+          this._dragging = true;
+          panStartX = e.clientX;
+          panStartScroll = this._scrollSecs;
+          panMoved = false;
+        }
       });
 
       document.addEventListener('mousemove', (e) => {
+        if (isZooming) {
+          const dx = e.clientX - zoomStartX;
+          // Drag right = zoom in (fewer secs visible); left = zoom out
+          const newVis = zoomStartVis * Math.pow(2, -dx / 150);
+          this.setVisibleSecs(newVis);
+          return;
+        }
         if (!this._dragging) return;
         const dx = e.clientX - panStartX;
         if (!panMoved && Math.abs(dx) < 4) return;
@@ -424,6 +441,12 @@ class FancyScrubber {
       });
 
       document.addEventListener('mouseup', (e) => {
+        if (isZooming) {
+          isZooming = false;
+          canvas.style.cursor = '';
+          document.body.style.userSelect = '';
+          return;
+        }
         if (!this._dragging) return;
         this._dragging = false;
         document.body.style.userSelect = '';

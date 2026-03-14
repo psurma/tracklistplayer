@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.3] - 2026-03-14
+
+### Changed
+- Zoom canvas: replaced footer zoom slider with Cmd+drag-to-zoom on the waveform itself — drag right to zoom in, drag left to zoom out; regular drag still pans, click still seeks
+
 ## [1.17.2] - 2026-03-14
 
 ### Added

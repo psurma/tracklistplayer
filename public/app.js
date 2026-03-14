@@ -145,8 +145,7 @@ async function loadWaveform(disc) {
 
     fancyScrubber.load(data, d ? d.tracks : []);
     wfStatus.classList.add('hidden');
-    const zoomSlider = document.getElementById('zoom-slider');
-    if (zoomSlider) { zoomSlider.value = 15; zmScrubber.setVisibleSecs(30); }
+    zmScrubber.setVisibleSecs(30);
   } catch (_) {
     wfStatus.classList.add('hidden');
     currentWfPath = null;
@@ -3318,19 +3317,6 @@ function initWaveformResize() {
   });
 }
 
-// ── Zoom slider ───────────────────────────────────────────────────────────────
-function initZoomSlider() {
-  const zoomSlider = document.getElementById('zoom-slider');
-  if (!zoomSlider) return;
-  zoomSlider.addEventListener('input', () => {
-    const pct  = zoomSlider.value / 100;
-    const minV = 5;
-    const maxV = fancyScrubber.duration || 300;
-    // Exponential mapping: slider right = zoomed in (fewer secs visible)
-    const v = maxV * Math.pow(minV / maxV, pct);
-    fancyScrubber.setVisibleSecs(v);
-  });
-}
 
 // ── Online tracklist finder (MixesDB) ────────────────────────────────────────
 const tlModalOverlay = document.getElementById('tl-modal-overlay');
@@ -3650,7 +3636,6 @@ async function init() {
   initMainResize();
   initNowPlayingResize();
   initWaveformResize();
-  initZoomSlider();
 
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
   (function waveformLoop() {
