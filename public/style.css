@@ -967,8 +967,8 @@ a.nfo-link:hover { color: #9ecfff; }
   -webkit-app-region: no-drag;
   position: relative;
 }
-#wf-overview-wrap { height: 50px; cursor: pointer; overflow: hidden; min-height: 16px; }
-#wf-zoom-wrap     { height: 110px; cursor: pointer; overflow: hidden; min-height: 30px; }
+#wf-overview-wrap { height: 50px; cursor: crosshair; overflow: hidden; min-height: 16px; }
+#wf-zoom-wrap     { height: 110px; cursor: crosshair; overflow: hidden; min-height: 30px; }
 #wf-overview-wrap canvas,
 #wf-zoom-wrap canvas { display: block; width: 100%; height: 100%; }
 #wf-resize-mid, #wf-resize-bot {
@@ -978,6 +978,8 @@ a.nfo-link:hover { color: #9ecfff; }
 }
 #wf-resize-mid:hover, #wf-resize-mid.dragging,
 #wf-resize-bot:hover, #wf-resize-bot.dragging { background: var(--accent); }
+#zoom-label { font-size: 11px; color: var(--text-muted); user-select: none; margin-left: 8px; }
+#zoom-slider { width: 70px; accent-color: var(--accent); cursor: pointer; }
 #wf-status {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);

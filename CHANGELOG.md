@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.17.0] - 2026-03-14
+
+### Changed
+- **Dual FancyScrubber layout**: restored the original two-canvas waveform layout (overview on top, zoom below) replacing the single-canvas design
+  - Overview canvas (`#wf-overview`, 50px): always shows the full track, no ruler, colour-coded sections, click to seek — playhead is a simple vertical line
+  - Zoom canvas (`#wf-zoom`, 110px): shows a configurable time window, has the time ruler, auto-scrolls keeping the playhead centred
+- **FancyScrubber** now accepts an `opts` parameter (`showRuler`, `centerPlayhead`) to support both canvas modes from the same class
+- **Zoom control moved to footer** (`#volume-row`): the Zoom range slider is now inline in the footer bar next to the volume slider
+- **Waveform resize handles** restored: drag the mid handle to resize the overview height, drag the bottom handle to resize the zoom height; sizes are persisted in `localStorage`
+
+## [1.16.0] - 2026-03-13
+
+### Added
+- **Fancy scrubber** (`FancyScrubber` class in `public/fancy-scrubber.js`): replaces the dual-canvas waveform (overview + 30-second zoom) with a single ElevenLabs-style timeline scrubber
+  - Time ruler at top with major/minor tick marks and time labels
+  - Colour-coded track sections (one hue per track, golden-angle spacing) spanning the full track duration
+  - Waveform bars (bass/mids/highs) drawn symmetrically inside each track section
+  - Floating playhead pill showing the current time in M:SS format
+  - Auto-scrolls to keep the playhead at ~30% from the left edge during playback
+  - Click or drag anywhere on the scrubber to seek
+  - Touch support for mobile/tablet
+  - DPR-correct canvas rendering via ResizeObserver
+- **Zoom slider** (`#zoom-slider`): `<input type="range">` below the scrubber with exponential mapping; drag right to zoom in (fewer seconds visible), drag left to see the full track
+- Zoom resets to full-track view whenever a new waveform loads
+
 ## [1.15.8] - 2026-03-12
 
 ### Security

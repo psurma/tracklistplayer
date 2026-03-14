@@ -17,20 +17,45 @@ const state = {
   favorites: new Set(),   // keys: "mp3File:trackNumber"
 };
 
-// ── Waveform renderer ─────────────────────────────────────────────────────────
-const wfSection  = document.getElementById('waveform-section');
-const wfStatus   = document.getElementById('wf-status');
-const waveformRenderer = new WaveformRenderer(
+// ── Dual FancyScrubber ────────────────────────────────────────────────────────
+const wfSection = document.getElementById('waveform-section');
+const wfStatus  = document.getElementById('wf-status');
+
+let ovScrubber, zmScrubber;
+
+const onScrubberSeek = (t) => {
+  if (!isFinite(audio.duration)) return;
+  audio.currentTime = t;
+  ovScrubber.seekTo(t);
+  zmScrubber.seekTo(t);
+  seekBar.value = (t / audio.duration) * 100;
+  timeCurrent.textContent = formatTime(t);
+};
+
+ovScrubber = new FancyScrubber(
   document.getElementById('wf-overview'),
-  document.getElementById('wf-zoom'),
-  (t) => {
-    if (!isFinite(audio.duration)) return;
-    audio.currentTime = t;
-    waveformRenderer.seekTo(t);
-    seekBar.value = (t / audio.duration) * 100;
-    timeCurrent.textContent = formatTime(t);
-  }
+  onScrubberSeek,
+  { showRuler: false }
 );
+
+zmScrubber = new FancyScrubber(
+  document.getElementById('wf-zoom'),
+  onScrubberSeek,
+  { showRuler: true, centerPlayhead: true, panMode: true }
+);
+
+// Thin proxy so all existing fancyScrubber.xxx references keep working
+const fancyScrubber = {
+  load:             (d, t) => { ovScrubber.load(d, t); zmScrubber.load(d, t); },
+  clear:            ()     => { ovScrubber.clear();     zmScrubber.clear();    },
+  tick:             (t)    => { ovScrubber.tick(t);     zmScrubber.tick(t);    },
+  seekTo:           (t)    => { ovScrubber.seekTo(t);   zmScrubber.seekTo(t);  },
+  setVisibleSecs:   (v)    => zmScrubber.setVisibleSecs(v),
+  _invalidateCache: ()     => { ovScrubber._invalidateCache(); zmScrubber._invalidateCache(); },
+  _draw:            ()     => { ovScrubber._draw();     zmScrubber._draw();    },
+  get peaks()    { return ovScrubber.peaks;    },
+  get duration() { return zmScrubber.duration; },
+};
 
 // ── Live spectrum renderer (for streaming sources) ────────────────────────────
 const liveSpectrumWrap = document.getElementById('live-spectrum-wrap');
@@ -38,7 +63,6 @@ const liveSpectrumCanvas = document.getElementById('live-spectrum');
 const liveSpectrum = new LiveSpectrumRenderer(liveSpectrumCanvas);
 
 function showLiveSpectrum() {
-  // Show waveform section with live spectrum canvas; hide static wf canvases
   wfSection.classList.remove('hidden');
   document.getElementById('wf-overview-wrap').classList.add('hidden');
   document.getElementById('wf-resize-mid').classList.add('hidden');
@@ -96,14 +120,16 @@ async function loadWaveform(disc) {
   hideLiveSpectrum();
   if (waveformVisible) wfSection.classList.remove('hidden');
   wfStatus.classList.remove('hidden');
-  waveformRenderer.clear();
+  fancyScrubber.clear();
   try {
     const res = await fetch(`/api/waveform?path=${encodeURIComponent(disc.mp3Path)}&bucketMs=${STORAGE.getSpectrumRes()}`);
     if (!res.ok) throw new Error('waveform failed');
     const data = await res.json();
     const d = state.discs.find((x) => x.id === disc.id);
-    waveformRenderer.load(data, d ? d.tracks : []);
+    fancyScrubber.load(data, d ? d.tracks : []);
     wfStatus.classList.add('hidden');
+    const zoomSlider = document.getElementById('zoom-slider');
+    if (zoomSlider) { zoomSlider.value = 15; zmScrubber.setVisibleSecs(30); }
   } catch (_) {
     wfStatus.classList.add('hidden');
     currentWfPath = null;
@@ -959,7 +985,7 @@ seekTicks.addEventListener('click', (e) => {
   e.stopPropagation();
   const t = parseFloat(tick.dataset.startSeconds);
   audio.currentTime = t;
-  waveformRenderer.seekTo(t);
+  fancyScrubber.seekTo(t);
   if (audio.paused) audio.play().catch(() => {});
 });
 
@@ -981,7 +1007,7 @@ function loadDisc(disc) {
     loadWaveform(disc);
     loadArtwork(disc);
   } else {
-    waveformRenderer.clear();
+    fancyScrubber.clear();
     wfSection.classList.add('hidden');
   }
 }
@@ -1012,7 +1038,7 @@ function playDiscAtTrack(disc, trackIdx) {
 
   function seekAndPlay() {
     audio.currentTime = startSecs;
-    waveformRenderer.seekTo(startSecs);
+    fancyScrubber.seekTo(startSecs);
     audio.play().catch(() => {});
     updateSeekTicks();
     audio.removeEventListener('loadedmetadata', seekAndPlay);
@@ -1609,7 +1635,7 @@ function initSpotifySDK(token) {
       const spotifyAudio = [...document.querySelectorAll('audio')].find((el) => el !== audio);
       if (spotifyAudio) {
         liveSpectrum.connectAudioElement(spotifyAudio);
-        waveformRenderer.clear();
+        fancyScrubber.clear();
         currentWfPath = null;
         showLiveSpectrum();
       }
@@ -2187,7 +2213,7 @@ async function playSoundcloudTrack(idx) {
   npSection.classList.remove('has-artwork');
   npSection.style.removeProperty('--artwork');
   currentWfPath = null;
-  waveformRenderer.clear();
+  fancyScrubber.clear();
   showLiveSpectrum();
 
   audio.src = `/api/soundcloud/stream/${encodeURIComponent(track.id)}`;
@@ -2291,7 +2317,7 @@ async function scanDirectory(dir, autoplay = false) {
   const token = ++scanToken;
   discList.innerHTML = '<div class="status-msg">Loading...</div>';
   currentWfPath = null;
-  waveformRenderer.clear();
+  fancyScrubber.clear();
   wfSection.classList.add('hidden');
 
   try {
@@ -2489,13 +2515,13 @@ btnPrev.addEventListener('click', () => {
     if (idx > 0 && audio.currentTime - disc.tracks[idx].startSeconds < 3) {
       playDiscAtTrack(disc, idx - 1);
     } else if (idx > 0) {
-      const t = disc.tracks[idx].startSeconds; audio.currentTime = t; waveformRenderer.seekTo(t);
+      const t = disc.tracks[idx].startSeconds; audio.currentTime = t; fancyScrubber.seekTo(t);
     } else {
       playAdjacentDisc('prev'); // already at first track — go to previous disc
     }
   } else {
     // Raw single-file disc — restart if > 3 s in, else go to prev disc
-    if (audio.currentTime > 3) { audio.currentTime = 0; waveformRenderer.seekTo(0); }
+    if (audio.currentTime > 3) { audio.currentTime = 0; fancyScrubber.seekTo(0); }
     else playAdjacentDisc('prev');
   }
 });
@@ -2534,7 +2560,7 @@ seekBar.addEventListener('input', () => {
     timeCurrent.textContent = formatTime(t);
   }
   audio.currentTime = t;
-  waveformRenderer.seekTo(t);
+  fancyScrubber.seekTo(t);
 });
 
 seekBar.addEventListener('change', () => {
@@ -2760,7 +2786,7 @@ if (themeToggle) {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     applyTheme(next);
     STORAGE.setTheme(next);
-    waveformRenderer._invalidateCache();
+    fancyScrubber._invalidateCache();
   });
 }
 
@@ -2787,12 +2813,11 @@ function setWaveformVisible(on) {
   // Turning on: load or re-render for current disc
   const disc = currentDisc();
   if (!disc || !disc.mp3Path) return;
-  if (currentWfPath === disc.mp3Path && waveformRenderer.peaks) {
+  if (currentWfPath === disc.mp3Path && fancyScrubber.peaks) {
     // Data already loaded — just show and re-render with correct canvas dims
     wfSection.classList.remove('hidden');
-    waveformRenderer._invalidateCache();
-    waveformRenderer._renderOverview();
-    waveformRenderer._renderZoom();
+    fancyScrubber._invalidateCache();
+    fancyScrubber._draw();
   } else {
     // Not loaded or failed — force a fresh load
     currentWfPath = null;
@@ -2821,13 +2846,13 @@ document.getElementById('sync-test-btn').addEventListener('click', async (e) => 
   // The WAV is served from memory so use the server-side endpoint
   wfSection.classList.remove('hidden');
   wfStatus.classList.remove('hidden');
-  waveformRenderer.clear();
+  fancyScrubber.clear();
 
   try {
     const res = await fetch(`/api/sync-test-waveform?bucketMs=${STORAGE.getSpectrumRes()}`);
     if (res.ok) {
       const data = await res.json();
-      waveformRenderer.load(data, fakeTracks);
+      fancyScrubber.load(data, fakeTracks);
       wfStatus.classList.add('hidden');
     }
   } catch (_) {
@@ -2907,8 +2932,8 @@ settingsOverlay.addEventListener('click', (e) => {
   if (setting === 'theme') {
     applyTheme(value);
     STORAGE.setTheme(value);
-    waveformRenderer._invalidateCache();
-    if (waveformVisible && currentWfPath) { waveformRenderer._renderOverview(); waveformRenderer._renderZoom(); }
+    fancyScrubber._invalidateCache();
+    if (waveformVisible && currentWfPath) { fancyScrubber._draw(); }
   } else if (setting === 'spectrum') {
     setWaveformVisible(value === 'on');
   } else if (setting === 'spectrumRes') {
@@ -3229,14 +3254,13 @@ function initNowPlayingResize() {
   });
 }
 
-// ── Waveform graph resize ─────────────────────────────────────────────────────
+// ── Waveform resize handles ───────────────────────────────────────────────────
 function initWaveformResize() {
-  const ovWrap      = document.getElementById('wf-overview-wrap');
-  const zmWrap      = document.getElementById('wf-zoom-wrap');
-  const midHandle   = document.getElementById('wf-resize-mid');
-  const botHandle   = document.getElementById('wf-resize-bot');
+  const ovWrap    = document.getElementById('wf-overview-wrap');
+  const zmWrap    = document.getElementById('wf-zoom-wrap');
+  const midHandle = document.getElementById('wf-resize-mid');
+  const botHandle = document.getElementById('wf-resize-bot');
 
-  // Restore persisted heights
   const savedOvH = parseInt(localStorage.getItem('tlp_wf_ov_h'), 10) || 50;
   const savedZmH = parseInt(localStorage.getItem('tlp_wf_zm_h'), 10) || 110;
   ovWrap.style.height = `${savedOvH}px`;
@@ -3263,11 +3287,9 @@ function initWaveformResize() {
     const max = dragging.wrap === ovWrap ? 200 : 400;
     const newH = Math.max(min, Math.min(max, startH + e.clientY - startY));
     dragging.wrap.style.height = `${newH}px`;
-    const key = dragging.wrap === ovWrap ? 'tlp_wf_ov_h' : 'tlp_wf_zm_h';
-    localStorage.setItem(key, newH);
-    waveformRenderer._invalidateCache();
-    if (dragging.wrap === ovWrap) waveformRenderer._renderOverview();
-    else waveformRenderer._renderZoom();
+    localStorage.setItem(dragging.wrap === ovWrap ? 'tlp_wf_ov_h' : 'tlp_wf_zm_h', newH);
+    if (dragging.wrap === ovWrap) { ovScrubber._invalidateCache(); ovScrubber._draw(); }
+    else                          { zmScrubber._invalidateCache(); zmScrubber._draw(); }
   });
 
   document.addEventListener('mouseup', () => {
@@ -3276,6 +3298,20 @@ function initWaveformResize() {
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
     dragging = null;
+  });
+}
+
+// ── Zoom slider ───────────────────────────────────────────────────────────────
+function initZoomSlider() {
+  const zoomSlider = document.getElementById('zoom-slider');
+  if (!zoomSlider) return;
+  zoomSlider.addEventListener('input', () => {
+    const pct  = zoomSlider.value / 100;
+    const minV = 5;
+    const maxV = fancyScrubber.duration || 300;
+    // Exponential mapping: slider right = zoomed in (fewer secs visible)
+    const v = maxV * Math.pow(minV / maxV, pct);
+    fancyScrubber.setVisibleSecs(v);
   });
 }
 
@@ -3548,11 +3584,12 @@ async function init() {
   initMainResize();
   initNowPlayingResize();
   initWaveformResize();
+  initZoomSlider();
 
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
   (function waveformLoop() {
     requestAnimationFrame(waveformLoop);
-    waveformRenderer.tick(audio.currentTime);
+    fancyScrubber.tick(audio.currentTime);
   }());
 
   // Init Spotify + SoundCloud integrations, then check for session restore
