@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.4] - 2026-03-14
+
+### Fixed
+- Waveform canvases now respect the active theme: light mode uses a white background with dark text/ticks, pale tinted track sections, and darker waveform bars; dark mode behaviour unchanged
+
 ## [1.17.3] - 2026-03-14
 
 ### Changed

@@ -165,12 +165,15 @@ class FancyScrubber {
     return hue0;
   }
 
-  _color(b, m, h, hueShift = 0) {
+  _color(b, m, h, hueShift = 0, isDark = true) {
     const peak  = Math.max(b, m, h, 1);
     const total = b + m * 0.7 + h * 0.5 + 1;
     const freqHue = (b * 0 + m * 0.7 * 60 + h * 0.5 * 200) / total;
     const hue = Math.round(((freqHue + hueShift) % 360 + 360) % 360);
-    const lit = Math.round(18 + (peak / 255) * 42);
+    // Dark mode: quiet=dim, loud=bright; Light mode: inverted so bars are visible on pale bg
+    const lit = isDark
+      ? Math.round(18 + (peak / 255) * 42)
+      : Math.round(55 - (peak / 255) * 32);
     return `hsl(${hue},90%,${lit}%)`;
   }
 
@@ -208,14 +211,17 @@ class FancyScrubber {
       ? scrollSecs + visibleSecs / 2
       : currentTime;
 
+    const isDark = document.documentElement.dataset.theme !== 'light';
+
     // ── Background ──────────────────────────────────────────────────────────
-    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0a0a0a';
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+      || (isDark ? '#111114' : '#f4f4f7');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
     if (!peaks) {
       if (this._showRuler) {
-        this._drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, currentTime);
+        this._drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, currentTime, isDark);
       }
       return;
     }
@@ -239,7 +245,7 @@ class FancyScrubber {
       const xClipR = Math.min(W, xEnd);
 
       // Track background
-      ctx.fillStyle = `hsl(${hue},45%,10%)`;
+      ctx.fillStyle = isDark ? `hsl(${hue},45%,10%)` : `hsl(${hue},40%,88%)`;
       ctx.fillRect(xClipL, wfTop, xClipR - xClipL, wfH);
 
       // Waveform bars within this time window
@@ -254,7 +260,7 @@ class FancyScrubber {
 
         const barH     = (peaks[b] / 255) * half * 0.92;
         const hueShift = this._trackHueAt(bTime);
-        ctx.fillStyle  = this._color(bass[b], mids[b], highs[b], hueShift);
+        ctx.fillStyle  = this._color(bass[b], mids[b], highs[b], hueShift, isDark);
 
         const bw = Math.max(1, Math.ceil(pixelsPerSec * bucketSecs));
         ctx.fillRect(bx, wfTop + half - barH, bw, barH * 2);
@@ -268,7 +274,7 @@ class FancyScrubber {
         ctx.beginPath();
         ctx.rect(xClipL, wfTop, xClipR - xClipL, wfH);
         ctx.clip();
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
         ctx.font = '10px "SF Mono","Fira Code",Consolas,monospace';
         const label = numTracks
           ? `${String(tracks[ti].track || (ti + 1)).padStart(2, '0')}${tracks[ti].title ? ' ' + tracks[ti].title : ''}`
@@ -281,12 +287,12 @@ class FancyScrubber {
     // ── Played region darken ─────────────────────────────────────────────────
     const playheadX = (displayTime - scrollSecs) * pixelsPerSec;
     if (playheadX > 0) {
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillStyle = isDark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.12)';
       ctx.fillRect(0, wfTop, Math.min(playheadX, W), wfH);
     }
 
     // ── Track divider lines ───────────────────────────────────────────────────
-    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillStyle = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)';
     for (const t of tracks) {
       const x = Math.round((t.startSeconds - scrollSecs) * pixelsPerSec);
       if (x >= 0 && x <= W) ctx.fillRect(x, wfTop, 1, wfH);
@@ -294,21 +300,21 @@ class FancyScrubber {
 
     // ── Ruler + Playhead ─────────────────────────────────────────────────────
     if (this._showRuler) {
-      this._drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, displayTime);
+      this._drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, displayTime, isDark);
     } else {
       // Overview: just draw the vertical playhead line, no pill
       const phX = Math.round((displayTime - scrollSecs) * pixelsPerSec);
       if (phX >= -2 && phX <= W + 2) {
-        const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#7c6af7';
+        const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#1db954';
         ctx.fillStyle = accent;
         ctx.fillRect(phX, 0, 2, H);
       }
     }
   }
 
-  _drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, currentTime) {
+  _drawRuler(ctx, W, H, RULER_H, wfTop, wfH, scrollSecs, pixelsPerSec, duration, currentTime, isDark = true) {
     // Ruler background
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillStyle = isDark ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.06)';
     ctx.fillRect(0, 0, W, RULER_H);
 
     // Tick interval: pick the smallest nice step that gives >= 60px gap
@@ -326,7 +332,7 @@ class FancyScrubber {
       if (x < 0 || x > W) continue;
 
       // Major tick
-      ctx.fillStyle = 'rgba(255,255,255,0.65)';
+      ctx.fillStyle = isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)';
       ctx.fillRect(x, RULER_H - 10, 1, 10);
       ctx.fillText(this._fmt(t), x + 3, RULER_H - 3);
     }
@@ -339,7 +345,7 @@ class FancyScrubber {
         if (Math.abs((t % step)) < 0.001) continue; // skip major positions
         const x = Math.round((t - scrollSecs) * pixelsPerSec);
         if (x < 0 || x > W) continue;
-        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)';
         ctx.fillRect(x, RULER_H - 5, 1, 5);
       }
     }
@@ -364,7 +370,7 @@ class FancyScrubber {
       const pillR    = 4;
 
       // Pill background
-      ctx.fillStyle = 'rgba(10,10,15,0.9)';
+      ctx.fillStyle = isDark ? 'rgba(10,10,15,0.9)' : 'rgba(240,240,245,0.92)';
       ctx.beginPath();
       ctx.moveTo(pillX + pillR, pillY);
       ctx.lineTo(pillX + pillW - pillR, pillY);
@@ -379,7 +385,7 @@ class FancyScrubber {
       ctx.fill();
 
       // Pill text
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = isDark ? '#ffffff' : '#111114';
       ctx.fillText(label, pillX + 5, pillY + pillH - 3);
     }
   }
