@@ -117,6 +117,15 @@ let currentWfPath = null;
 async function loadWaveform(disc) {
   if (!disc.mp3Path || disc.mp3Path === currentWfPath) return;
   currentWfPath = disc.mp3Path;
+
+  // Re-parse NFO for this disc (handles multi-disc releases where track numbering restarts)
+  if (lastNfoText) {
+    lastNfoParsedTracks = parseNfoTracklist(lastNfoText, disc.mp3Path);
+    const canDetect = lastNfoParsedTracks !== null && !disc.tracks.length;
+    nfoDetectBtn.classList.toggle('hidden', !canDetect);
+    nfoTabDetectBtn.classList.toggle('hidden', !canDetect);
+  }
+
   hideLiveSpectrum();
   if (waveformVisible) wfSection.classList.remove('hidden');
   wfStatus.classList.remove('hidden');
@@ -761,8 +770,8 @@ async function showNfo(dir) {
     const text = await res.text();
     lastNfoDir = dir;
     lastNfoText = text;
-    lastNfoParsedTracks = parseNfoTracklist(text);
     const disc = currentDisc();
+    lastNfoParsedTracks = parseNfoTracklist(text, disc?.mp3Path);
     const canDetect = lastNfoParsedTracks !== null && disc && !disc.tracks.length;
     nfoDetectBtn.classList.toggle('hidden', !canDetect);
     nfoTabDetectBtn.classList.toggle('hidden', !canDetect);
@@ -3334,19 +3343,52 @@ let detectStagedTracks  = null;
 
 // Parse a numbered tracklist out of NFO text.
 // Returns array of {track, title, performer, startSeconds:null} or null if not found.
-function parseNfoTracklist(text) {
+function parseNfoTracklist(text, mp3Path = null) {
   if (!text) return null;
-  const re = /^\s*(\d{1,3})[.)]\s+(.+)/gm;
+
+  // Detect target disc number from mp3 filename (cd1, cd2, disc1, 201-..., etc.)
+  let targetDisc = 1;
+  if (mp3Path) {
+    const fname = mp3Path.split('/').pop().toLowerCase();
+    const cdMatch    = fname.match(/(?:cd|dis[ck])[-_]?(\d+)/i);
+    const prefixMatch = !cdMatch && fname.match(/^(\d)(?=\d{2}[-_])/);
+    if (cdMatch)       targetDisc = parseInt(cdMatch[1], 10);
+    else if (prefixMatch) targetDisc = parseInt(prefixMatch[1], 10);
+  }
+
+  // If the NFO has disc section headers, extract only the relevant section
+  let parseText = text;
+  if (/^Disc\s+\d+\/\d+/im.test(text)) {
+    const positions = [];
+    const sRe = /^Disc\s+(\d+)\/\d+/gim;
+    let sm;
+    while ((sm = sRe.exec(text)) !== null) {
+      positions.push({ disc: parseInt(sm[1], 10), index: sm.index });
+    }
+    if (positions.length > 0) {
+      const chosenIdx = positions.findIndex((p) => p.disc === targetDisc);
+      const ci  = chosenIdx >= 0 ? chosenIdx : 0;
+      const end = ci + 1 < positions.length ? positions[ci + 1].index : text.length;
+      parseText = text.slice(positions[ci].index, end);
+    }
+  }
+
+  // Match numbered lines: "1. title", "1) title", or "1  title" (space-separated NFOs)
+  // Title must start with a letter to avoid false matches on time codes / sizes
+  const re = /^\s*(\d{1,3})(?:[.)]\s+|\s+)([A-Za-z].+)/gm;
   const entries = [];
   let m;
-  while ((m = re.exec(text)) !== null) {
-    entries.push({ num: parseInt(m[1], 10), line: m[2].trim() });
+  while ((m = re.exec(parseText)) !== null) {
+    // Strip trailing duration (e.g. "  4:03" or "  1:22:05") from the captured title
+    const line = m[2].trim().replace(/\s+\d{1,2}:\d{2}(?::\d{2})?\s*$/, '').trim();
+    if (!line) continue;
+    entries.push({ num: parseInt(m[1], 10), line });
   }
+
   if (entries.length < 3) return null;
-  // Must start near track 1 (allow numbering from 0 or 1)
   if (entries[0].num > 2) return null;
+
   return entries.map((e, i) => {
-    // Split on em-dash, en-dash, or space-hyphen-space to get performer / title
     const sepMatch = e.line.match(/^(.+?)\s+(?:–|—|-)\s+(.+)$/);
     return {
       track:        i + 1,

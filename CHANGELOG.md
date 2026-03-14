@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.17.1] - 2026-03-14
+
+### Fixed
+- NFO track parsing now matches space-separated formats (`1  Artist - Title  4:03`) in addition to the existing dot/paren formats (`1. title`, `1) title`)
+- Trailing duration strings (e.g. `4:03`, `1:22:05`) are now stripped from parsed track titles
+- Multi-disc NFOs with `Disc 1/2` / `Disc 2/2` sections are now handled: the correct disc's track list is extracted based on the active MP3 filename (detects `cd1`/`cd2`, `disc1`/`disc2`, and `1XX-`/`2XX-` prefixes)
+- Re-parses NFO for the correct disc section when switching between discs in the same directory
+
 ## [1.17.0] - 2026-03-14
 
 ### Changed
