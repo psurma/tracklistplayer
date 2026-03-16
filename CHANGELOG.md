@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.6] - 2026-03-16
+
+### Changed
+- Favourite stars in the now-playing header now slowly rotate (one clockwise, one counter-clockwise) in addition to the gold shimmer
+
 ## [1.17.5] - 2026-03-16
 
 ### Fixed

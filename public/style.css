@@ -824,6 +824,10 @@ body.mini #seek-bar         { height: 6px; }
   50%  { color: #fffbe8; text-shadow: 0 0 8px #fff, 0 0 18px #ffd700, 0 0 28px #ffaa00; }
   100% { color: #ffd700; text-shadow: 0 0 4px #ffd700, 0 0 10px #ffaa00; }
 }
+@keyframes fav-star-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 #np-title.is-fav::before,
 #np-title.is-fav::after {
   content: '★';
@@ -831,10 +835,13 @@ body.mini #seek-bar         { height: 6px; }
   font-size: 28px;
   vertical-align: middle;
   margin: 0 8px;
-  animation: fav-star-shimmer 1.6s ease-in-out infinite;
+  animation: fav-star-shimmer 1.6s ease-in-out infinite, fav-star-spin 8s linear infinite;
   pointer-events: none;
 }
-#np-title.is-fav::after { animation-delay: 0.8s; }
+#np-title.is-fav::after {
+  animation-delay: 0.8s, 0s;
+  animation-direction: normal, reverse;
+}
 
 
 /* ── NFO pane ───────────────────────────────── */
