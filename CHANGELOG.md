@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.5] - 2026-03-16
+
+### Fixed
+- Starring a track now immediately updates the shimmer stars in the now-playing header without requiring the track to be reselected
+- Favourite stars in the header are now larger (28px) with correct vertical alignment
+
 ## [1.17.4] - 2026-03-14
 
 ### Fixed

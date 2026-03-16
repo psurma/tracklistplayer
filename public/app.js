@@ -308,6 +308,11 @@ function toggleFavorite(disc, trackIdx, starEl) {
     starEl.title = 'Remove from favorites';
   }
   saveFavorites();
+  // Immediately update header star if this is the currently displayed track
+  const activeDisc = currentDisc();
+  if (activeDisc && activeDisc.id === disc.id) {
+    npTitle.classList.toggle('is-fav', state.favorites.has(key));
+  }
   const favsPanel = document.getElementById('favs-panel');
   if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
 }
@@ -1131,6 +1136,10 @@ function renderDiscList() {
           starEl.title = 'Remove from favorites';
         }
         saveFavorites();
+        // Immediately update header star if this disc is active
+        if (currentDisc() && currentDisc().id === disc.id) {
+          npTitle.classList.toggle('is-fav', state.favorites.has(rawKey));
+        }
         const favsPanel = document.getElementById('favs-panel');
         if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
       });

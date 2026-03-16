@@ -828,7 +828,9 @@ body.mini #seek-bar         { height: 6px; }
 #np-title.is-fav::after {
   content: '★';
   display: inline-block;
-  margin: 0 7px;
+  font-size: 28px;
+  vertical-align: middle;
+  margin: 0 8px;
   animation: fav-star-shimmer 1.6s ease-in-out infinite;
   pointer-events: none;
 }
