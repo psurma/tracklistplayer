@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.7] - 2026-03-16
+
+### Added
+- Starred tracks emit a small gold/orange firework burst from each star on loud waveform peaks (peak > 210/255, max once per 800 ms)
+
 ## [1.17.6] - 2026-03-16
 
 ### Changed

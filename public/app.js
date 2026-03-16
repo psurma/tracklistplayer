@@ -3614,6 +3614,33 @@ tlBackBtn.addEventListener('click', () => {
 });
 tlApplyBtn.addEventListener('click', applyScrapedTracklist);
 
+// ── Star firework ─────────────────────────────────────────────────────────────
+function triggerStarFirework() {
+  const rect   = npTitle.getBoundingClientRect();
+  const colors = ['#ffd700', '#ffed4a', '#ff8c00', '#fffbe8', '#ffffff'];
+  // Burst from both the ::before (left) and ::after (right) star positions
+  const origins = [
+    { x: rect.left  + 14, y: rect.top + rect.height * 0.5 },
+    { x: rect.right - 14, y: rect.top + rect.height * 0.5 },
+  ];
+  for (const origin of origins) {
+    const count = 4 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i / count) + (Math.random() - 0.5) * 0.6;
+      const dist  = 16 + Math.random() * 24;
+      const spark = document.createElement('span');
+      spark.className = 'star-spark';
+      spark.style.left       = `${origin.x - 2}px`;
+      spark.style.top        = `${origin.y - 2}px`;
+      spark.style.background = colors[Math.floor(Math.random() * colors.length)];
+      spark.style.setProperty('--spark-dx', `${(Math.cos(angle) * dist).toFixed(1)}px`);
+      spark.style.setProperty('--spark-dy', `${(Math.sin(angle) * dist).toFixed(1)}px`);
+      document.body.appendChild(spark);
+      setTimeout(() => spark.remove(), 700);
+    }
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   loadFavorites();
@@ -3647,9 +3674,22 @@ async function init() {
   initWaveformResize();
 
   // 60 fps waveform loop — reads audio.currentTime directly for smooth scrolling
+  let lastBeatMs = 0;
   (function waveformLoop() {
     requestAnimationFrame(waveformLoop);
     fancyScrubber.tick(audio.currentTime);
+
+    // Beat-triggered star firework on starred tracks
+    if (!audio.paused && npTitle.classList.contains('is-fav') && ovScrubber.peaks) {
+      const now = Date.now();
+      if (now - lastBeatMs > 800) {
+        const bi = Math.floor(audio.currentTime / ovScrubber.bucketSecs);
+        if (ovScrubber.peaks[bi] > 210) {
+          lastBeatMs = now;
+          triggerStarFirework();
+        }
+      }
+    }
   }());
 
   // Init Spotify + SoundCloud integrations, then check for session restore
