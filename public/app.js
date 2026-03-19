@@ -2643,11 +2643,75 @@ timeTotal.addEventListener('click', () => {
 });
 
 // ── Filter ────────────────────────────────────────────────────────────────────
-filterInput.addEventListener('input', () => { applyFilter(filterInput.value); STORAGE.setFilter(filterInput.value); });
-filterInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { filterInput.value = ''; applyFilter(''); }
+const FILTER_HISTORY_KEY = 'tlp_filter_history';
+const FILTER_HISTORY_MAX = 30;
+
+function loadFilterHistory() {
+  try { return JSON.parse(localStorage.getItem(FILTER_HISTORY_KEY)) || []; }
+  catch (_) { return []; }
+}
+
+function saveFilterHistory(history) {
+  try { localStorage.setItem(FILTER_HISTORY_KEY, JSON.stringify(history)); } catch (_) {}
+}
+
+function pushFilterHistory(value) {
+  if (!value.trim()) return;
+  const history = loadFilterHistory().filter((s) => s !== value);
+  history.unshift(value);
+  saveFilterHistory(history.slice(0, FILTER_HISTORY_MAX));
+}
+
+// historyIndex: -1 = live input, 0..n = navigating history; liveValue saves what the user typed
+let filterHistoryIndex = -1;
+let filterLiveValue    = '';
+
+filterInput.addEventListener('input', () => {
+  filterHistoryIndex = -1;
+  filterLiveValue    = filterInput.value;
+  applyFilter(filterInput.value);
+  STORAGE.setFilter(filterInput.value);
 });
-filterClear.addEventListener('click', () => { filterInput.value = ''; applyFilter(''); filterInput.focus(); });
+
+filterInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    filterInput.value  = '';
+    filterHistoryIndex = -1;
+    filterLiveValue    = '';
+    applyFilter('');
+    return;
+  }
+  if (e.key === 'Enter' && filterInput.value.trim()) {
+    pushFilterHistory(filterInput.value.trim());
+    filterHistoryIndex = -1;
+    return;
+  }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const history = loadFilterHistory();
+    if (!history.length) return;
+    if (filterHistoryIndex === -1) filterLiveValue = filterInput.value;
+    if (e.key === 'ArrowUp') {
+      filterHistoryIndex = Math.min(filterHistoryIndex + 1, history.length - 1);
+    } else {
+      filterHistoryIndex = filterHistoryIndex - 1;
+    }
+    const val = filterHistoryIndex < 0 ? filterLiveValue : history[filterHistoryIndex];
+    filterInput.value = val;
+    // Move cursor to end
+    filterInput.setSelectionRange(val.length, val.length);
+    applyFilter(val);
+    STORAGE.setFilter(val);
+  }
+});
+
+filterClear.addEventListener('click', () => {
+  filterInput.value  = '';
+  filterHistoryIndex = -1;
+  filterLiveValue    = '';
+  applyFilter('');
+  filterInput.focus();
+});
 
 // ── Dir load ──────────────────────────────────────────────────────────────────
 function loadRoot(dir) {

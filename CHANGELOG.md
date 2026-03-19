@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.17.11] - 2026-03-19
+
+### Added
+- Filter input now remembers up to 30 previously used search strings; press Up/Down arrows to navigate history. Strings are saved to localStorage on Enter.
+- macOS app icon (purple waveform bars on dark background) added to `build/icon.icns`
+
 ## [1.17.10] - 2026-03-16
 
 ### Fixed
