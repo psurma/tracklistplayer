@@ -3616,12 +3616,19 @@ tlApplyBtn.addEventListener('click', applyScrapedTracklist);
 
 // ── Star firework ─────────────────────────────────────────────────────────────
 function triggerStarFirework() {
-  const rect   = npTitle.getBoundingClientRect();
+  // Use a Range on the text node to find where the text actually starts/ends,
+  // so we can position sparks at the ::before and ::after star pseudo-elements.
+  const textNode = Array.from(npTitle.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+  if (!textNode) return;
+  const range = document.createRange();
+  range.selectNode(textNode);
+  const textRect = range.getBoundingClientRect();
+  const midY = textRect.top + textRect.height * 0.5;
   const colors = ['#ffd700', '#ffed4a', '#ff8c00', '#fffbe8', '#ffffff'];
-  // Burst from both the ::before (left) and ::after (right) star positions
+  // ::before star sits ~22px left of text start; ::after sits ~22px right of text end
   const origins = [
-    { x: rect.left  + 14, y: rect.top + rect.height * 0.5 },
-    { x: rect.right - 14, y: rect.top + rect.height * 0.5 },
+    { x: textRect.left  - 22, y: midY },
+    { x: textRect.right + 22, y: midY },
   ];
   for (const origin of origins) {
     const count = 4 + Math.floor(Math.random() * 3);
@@ -3682,9 +3689,15 @@ async function init() {
     // Beat-triggered star firework on starred tracks
     if (!audio.paused && npTitle.classList.contains('is-fav') && ovScrubber.peaks) {
       const now = Date.now();
-      if (now - lastBeatMs > 800) {
-        const bi = Math.floor(audio.currentTime / ovScrubber.bucketSecs);
-        if (ovScrubber.peaks[bi] > 210) {
+      if (now - lastBeatMs > 350) {
+        const bi = Math.floor(audio.currentTime / (ovScrubber.bucketSecs || 1));
+        const peak = ovScrubber.peaks[bi] || 0;
+        // Onset detection: peak must exceed trailing average by 30% and be loud enough
+        const windowSize = 8;
+        let sum = 0;
+        for (let k = Math.max(0, bi - windowSize); k < bi; k++) sum += (ovScrubber.peaks[k] || 0);
+        const avg = sum / Math.max(1, bi - Math.max(0, bi - windowSize));
+        if (peak > 180 && peak > avg * 1.3) {
           lastBeatMs = now;
           triggerStarFirework();
         }

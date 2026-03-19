@@ -29,11 +29,7 @@ class FancyScrubber {
     this.visibleSecs = 60;
     this._scrollSecs = 0;
 
-    // Seek smoothing
-    this._seekActive    = false;
-    this._seekAnchor    = 0;
-    this._seekAnchorRef = 0;
-    this._dragging      = false;
+    this._dragging = false;
 
     this._bindEvents();
   }
@@ -41,10 +37,13 @@ class FancyScrubber {
   // ── Public API ───────────────────────────────────────────────────────────────
 
   seekTo(t) {
-    this.currentTime    = t;
-    this._seekAnchor    = t;
-    this._seekAnchorRef = performance.now();
-    this._seekActive    = true;
+    this.currentTime = t;
+    // Immediately re-centre the zoom viewport so there's no one-frame lag
+    if (this._centerPlayhead && this.duration > 0) {
+      const half = this.visibleSecs / 2;
+      this._scrollSecs = this._clamp(t - half, 0, Math.max(0, this.duration - this.visibleSecs));
+    }
+    this._draw();
   }
 
   load(apiData, tracks, liveDuration) {
@@ -68,16 +67,7 @@ class FancyScrubber {
   }
 
   tick(audioCurrentTime) {
-    if (this._seekActive) {
-      const elapsed = (performance.now() - this._seekAnchorRef) / 1000;
-      this.currentTime = this._seekAnchor + elapsed;
-      if (Math.abs(audioCurrentTime - this.currentTime) < 0.3) {
-        this._seekActive = false;
-        this.currentTime = audioCurrentTime;
-      }
-    } else {
-      this.currentTime = audioCurrentTime;
-    }
+    this.currentTime = audioCurrentTime;
     if (!this.peaks) return;
 
     // Overview mode: always show full track, no scrolling
@@ -287,7 +277,7 @@ class FancyScrubber {
     // ── Played region darken ─────────────────────────────────────────────────
     const playheadX = (displayTime - scrollSecs) * pixelsPerSec;
     if (playheadX > 0) {
-      ctx.fillStyle = isDark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.12)';
+      ctx.fillStyle = isDark ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.40)';
       ctx.fillRect(0, wfTop, Math.min(playheadX, W), wfH);
     }
 

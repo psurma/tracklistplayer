@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.17.10] - 2026-03-16
+
+### Fixed
+- Zoom waveform no longer drifts out of sync with audio playback; removed the seek-smoothing mechanism (`_seekActive`) whose wall-clock elapsed timer could permanently desync from `audio.currentTime` if the browser took >300 ms to process a seek (rebuffering). `tick()` now uses `audio.currentTime` directly, and `seekTo()` immediately re-centres the zoom viewport.
+
+## [1.17.9] - 2026-03-16
+
+### Changed
+- Played region of both waveform canvases is now significantly darker (dark mode: 65% black overlay, light mode: 40% black overlay) to make the played/unplayed split clearly visible
+
+## [1.17.8] - 2026-03-16
+
+### Fixed
+- Star firework particles now originate from the actual star pseudo-elements (using Range API on the text node) instead of the full-width block container edges
+- Beat detection for fireworks now uses onset detection (peak must exceed trailing 8-bucket average by 30%), lowers the loudness threshold to 180/255, and shortens the cooldown to 350 ms so more beats trigger effects
+
 ## [1.17.7] - 2026-03-16
 
 ### Added
