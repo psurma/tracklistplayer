@@ -46,7 +46,7 @@ function readLibrary() {
 
 function writeLibrary(folders) {
   _libraryCache = folders; // update cache immediately
-  try { fs.mkdirSync(TLP_DIR, { recursive: true }); } catch (_) {}
+  try { fs.mkdirSync(TLP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
   fs.writeFileSync(LIBRARY_FILE, JSON.stringify(folders));
 }
 
