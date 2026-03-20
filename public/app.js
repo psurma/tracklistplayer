@@ -14,7 +14,7 @@ const state = {
   seeking: false,
   sidebarCollapsed: false,
   browseDir: '',          // currently browsed folder (folder browser)
-  favorites: new Set(),   // keys: "mp3File:trackNumber"
+  favorites: new Map(),   // keys: "mp3File:trackNumber" → favorite metadata
 };
 
 // ── Dual FancyScrubber ────────────────────────────────────────────────────────
@@ -620,19 +620,18 @@ function formatDurationMs(ms) {
 }
 
 function renderStreamInfo(rows, description, pageUrl) {
-  const escFn = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const linkify = (text) => escFn(text).replace(
+  const linkify = (text) => escapeHtml(text).replace(
     /https?:\/\/[^\s<>"]+/g,
-    (url) => `<a class="nfo-link" href="${escFn(url)}" target="_blank" rel="noopener noreferrer">${escFn(url)}</a>`
+    (url) => `<a class="nfo-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`
   );
   let html = '<table class="stream-info-table">';
   for (const [label, value] of rows) {
     if (!value) continue;
-    html += `<tr><th>${escFn(label)}</th><td>${escFn(String(value))}</td></tr>`;
+    html += `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(String(value))}</td></tr>`;
   }
-  if (pageUrl) {
+  if (pageUrl && /^https?:\/\//i.test(pageUrl)) {
     const clean = pageUrl.replace(/[?&]utm_[^&]*/g, '').replace(/[?&]$/, '');
-    html += `<tr><th>Link</th><td><a class="nfo-link" href="${escFn(clean)}" target="_blank" rel="noopener noreferrer">${escFn(clean)}</a></td></tr>`;
+    html += `<tr><th>Link</th><td><a class="nfo-link" href="${escapeHtml(clean)}" target="_blank" rel="noopener noreferrer">${escapeHtml(clean)}</a></td></tr>`;
   }
   html += '</table>';
   if (description && description.trim()) {
@@ -910,6 +909,8 @@ function updateNowPlaying(trackIdx) {
   if (isMini) updateMiniInfo();
 }
 
+let _activeTrackEl = null; // cached reference to the currently active .track-item DOM node
+
 function highlightTrackInSidebar(discId, trackIdx) {
   discList.querySelectorAll('.track-item').forEach((el) => {
     el.classList.remove('active');
@@ -917,11 +918,12 @@ function highlightTrackInSidebar(discId, trackIdx) {
   });
   // trackIdx -1 means raw disc (no CUE) — still highlight the single file row
   const el = discList.querySelector(`.track-item[data-disc="${discId}"][data-track="${trackIdx}"]`);
+  _activeTrackEl = el || null;
   if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
 function updateTrackProgress() {
-  const el = discList.querySelector('.track-item.active');
+  const el = _activeTrackEl;
   if (!el || !isFinite(audio.duration) || audio.duration <= 0) return;
   const disc = currentDisc();
   if (!disc) return;
@@ -1071,6 +1073,7 @@ function playDiscAtTrack(disc, trackIdx) {
 
 // ── Disc list rendering ───────────────────────────────────────────────────────
 function renderDiscList() {
+  _activeTrackEl = null; // DOM is being rebuilt; cached reference is no longer valid
   discList.innerHTML = '';
 
   if (!state.discs.length) {
@@ -1079,7 +1082,6 @@ function renderDiscList() {
   }
 
   for (const disc of state.discs) {
-    loadScrapedTracklist(disc); // inject persisted tracklist if disc has no CUE tracks
     const section = document.createElement('div');
     section.className = 'disc-section';
 
@@ -2354,6 +2356,7 @@ async function scanDirectory(dir, autoplay = false) {
     const data = await res.json();
     if (token !== scanToken) return; // superseded by a newer scan
     state.discs = data.discs;
+    for (const disc of state.discs) loadScrapedTracklist(disc);
     renderDiscList();
 
     // Double-click: play first track from scratch
@@ -2999,21 +3002,7 @@ function syncSettingsBtns(setting, value) {
 }
 
 settingsOverlay.addEventListener('click', (e) => {
-  if (e.target === settingsOverlay) closeSettings();
-});
-settingsClose.addEventListener('click', closeSettings);
-settingsBtn.addEventListener('click', openSettings);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
-
-settingsVolume.addEventListener('input', () => {
-  const v = parseFloat(settingsVolume.value);
-  audio.volume = v;
-  volumeBar.value = v;
-  STORAGE.setVolume(v);
-  settingsVolVal.textContent = Math.round(v * 100) + '%';
-});
-
-settingsOverlay.addEventListener('click', (e) => {
+  if (e.target === settingsOverlay) { closeSettings(); return; }
   const btn = e.target.closest('.seg-btn');
   if (!btn) return;
   const { setting, value } = btn.dataset;
@@ -3041,6 +3030,17 @@ settingsOverlay.addEventListener('click', (e) => {
   } else if (setting === 'trackLabels') {
     setTrackLabelsVisible(value === 'on');
   }
+});
+settingsClose.addEventListener('click', closeSettings);
+settingsBtn.addEventListener('click', openSettings);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
+
+settingsVolume.addEventListener('input', () => {
+  const v = parseFloat(settingsVolume.value);
+  audio.volume = v;
+  volumeBar.value = v;
+  STORAGE.setVolume(v);
+  settingsVolVal.textContent = Math.round(v * 100) + '%';
 });
 
 // ── Reindex button ────────────────────────────────────────────────────────────
@@ -3878,6 +3878,7 @@ function loadDroppedFiles(files) {
   });
 
   state.discs = newDiscs;
+  for (const disc of state.discs) loadScrapedTracklist(disc);
   renderDiscList();
 
   const first = newDiscs[0];

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.18.0] - 2026-03-20
+
+### Security
+- Fixed path traversal: `/api/ls` and `/api/ls-stream` now canonicalise the `dir` parameter via `path.resolve()` to prevent `../..` bypass
+- Fixed path traversal: `/api/index` and `/api/index-stream` now validate the `root` parameter against library roots via `resolveAndValidate()`
+- Fixed potential `javascript:` URI injection in `renderStreamInfo` — `pageUrl` is now checked for an `https?://` scheme before being rendered as a link
+- Replaced inline `escFn` in `renderStreamInfo` with the top-level `escapeHtml` to eliminate a third duplicate implementation
+
+### Fixed
+- OAuth state maps (`pendingSpotifyStates`, `pendingSoundcloudStates`) are now purged of expired entries every 15 minutes to prevent unbounded memory growth
+- `state.favorites` initial value corrected from `new Set()` to `new Map()` to match its actual runtime type
+- Two separate `click` listeners on `settingsOverlay` merged into one handler
+- `loadScrapedTracklist` moved out of `renderDiscList` (render-time mutation) into the two sites where `state.discs` is assigned
+- Active track DOM reference cached in `_activeTrackEl`; `updateTrackProgress` no longer queries the DOM on every `timeupdate` event
+- Removed duplicate `AUDIO_EXTS` constant; `hasMusic()` now uses the top-level `AUDIO_FILE_EXTS`
+
+### Changed
+- `readLibrary()` now caches the library in memory; `writeLibrary()` updates the cache inline — eliminates repeated synchronous disk reads on every API request
+- `require('child_process')` and `require('https')` moved to top-level imports in `server.js`
+- Token refresh boilerplate (9 occurrences across Spotify and SoundCloud routes) consolidated into `ensureFreshToken(config, refreshFn)` helper
+
 ## [1.17.11] - 2026-03-19
 
 ### Added

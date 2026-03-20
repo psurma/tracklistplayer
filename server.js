@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
+const { spawn } = require('child_process');
+const https = require('https');
 
 const app = express();
 const PORT = 3123;
@@ -33,12 +35,17 @@ function resolveAndValidate(inputPath, allowedRoots) {
 const TLP_DIR = path.join(os.homedir(), '.tracklistplayer');
 const LIBRARY_FILE = path.join(TLP_DIR, 'library.json');
 
+let _libraryCache = null;
+
 function readLibrary() {
-  try { return JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8')); }
-  catch (_) { return []; }
+  if (_libraryCache !== null) return _libraryCache;
+  try { _libraryCache = JSON.parse(fs.readFileSync(LIBRARY_FILE, 'utf8')); }
+  catch (_) { _libraryCache = []; }
+  return _libraryCache;
 }
 
 function writeLibrary(folders) {
+  _libraryCache = folders; // update cache immediately
   try { fs.mkdirSync(TLP_DIR, { recursive: true }); } catch (_) {}
   fs.writeFileSync(LIBRARY_FILE, JSON.stringify(folders));
 }
@@ -124,6 +131,14 @@ async function refreshSpotifyToken(config) {
   return updated;
 }
 
+// Shared helper: auto-refresh an access token if it expires within 60 s
+async function ensureFreshToken(config, refreshFn) {
+  if (config.expires_at && Date.now() > config.expires_at - 60000) {
+    try { return await refreshFn(config); } catch (_) {}
+  }
+  return config;
+}
+
 // GET /api/spotify/config — return client_id and auth status
 app.get('/api/spotify/config', async (req, res) => {
   const config = await readSpotifyConfig();
@@ -145,6 +160,17 @@ app.post('/api/spotify/credentials', async (req, res) => {
 // Pending OAuth state tokens — prevent CSRF on callbacks (M4)
 const pendingSpotifyStates = new Map();
 const pendingSoundcloudStates = new Map();
+
+// Periodically remove expired OAuth state tokens to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [st, expiry] of pendingSpotifyStates) {
+    if (now > expiry) pendingSpotifyStates.delete(st);
+  }
+  for (const [st, expiry] of pendingSoundcloudStates) {
+    if (now > expiry) pendingSoundcloudStates.delete(st);
+  }
+}, 15 * 60 * 1000);
 
 // GET /api/spotify/auth-url — generate Spotify authorize URL
 app.get('/api/spotify/auth-url', async (req, res) => {
@@ -248,11 +274,7 @@ app.get('/api/spotify/refresh', async (req, res) => {
 app.get('/api/spotify/liked', async (req, res) => {
   let config = await readSpotifyConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-
-  // Auto-refresh if token is about to expire
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSpotifyToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSpotifyToken);
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -272,9 +294,7 @@ app.get('/api/spotify/liked', async (req, res) => {
 app.get('/api/spotify/playlists', async (req, res) => {
   let config = await readSpotifyConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSpotifyToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSpotifyToken);
   try {
     const r = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
@@ -292,9 +312,7 @@ app.get('/api/spotify/playlist-tracks', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'id required' });
   let config = await readSpotifyConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSpotifyToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSpotifyToken);
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
   try {
@@ -320,9 +338,7 @@ app.get('/api/spotify/playlist-tracks', async (req, res) => {
 app.get('/api/spotify/devices', async (req, res) => {
   let config = await readSpotifyConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSpotifyToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSpotifyToken);
   try {
     const devRes = await fetch('https://api.spotify.com/v1/me/player/devices', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
@@ -384,12 +400,10 @@ app.get('/api/scan', async (req, res) => {
 const lsCache   = new Map();
 const scanCache = new Map();
 
-const AUDIO_EXTS = new Set(['.mp3', '.cue', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus', '.wma']);
-
 async function hasMusic(dirPath) {
   try {
     const files = await fs.promises.readdir(dirPath);
-    return files.some((f) => AUDIO_EXTS.has(f.slice(f.lastIndexOf('.')).toLowerCase()));
+    return files.some((f) => AUDIO_FILE_EXTS.has(f.slice(f.lastIndexOf('.')).toLowerCase()));
   } catch (_) {
     return false;
   }
@@ -398,8 +412,8 @@ async function hasMusic(dirPath) {
 // GET /api/ls?dir=<path>&bust=1
 // Returns cached JSON instantly if available; otherwise falls through to SSE stream.
 app.get('/api/ls', async (req, res) => {
-  const dir = req.query.dir;
-  if (!dir) return res.status(400).json({ error: 'dir required' });
+  if (!req.query.dir) return res.status(400).json({ error: 'dir required' });
+  const dir = path.resolve(req.query.dir); // canonicalise; prevents ../.. traversal
   if (!req.query.bust && lsCache.has(dir)) return res.json(lsCache.get(dir));
   return res.status(204).end(); // not cached — client should use /api/ls-stream
 });
@@ -408,8 +422,8 @@ app.get('/api/ls', async (req, res) => {
 // as its hasMusic check resolves; the client inserts items in sorted order live.
 // When the cache is already warm the whole batch is sent in a single 'batch' event.
 app.get('/api/ls-stream', async (req, res) => {
-  const dir = req.query.dir;
-  if (!dir) { res.status(400).end(); return; }
+  if (!req.query.dir) { res.status(400).end(); return; }
+  const dir = path.resolve(req.query.dir); // canonicalise; prevents ../.. traversal
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -520,7 +534,6 @@ async function getOrComputeWaveform(filePath, bucketMs) {
   const cacheKey = `${filePath}@${bucketMs}`;
   if (waveformCache.has(cacheKey)) return waveformCache.get(cacheKey);
 
-  const { spawn } = require('child_process');
   const SAMPLE_RATE = 2000;
   const SAMPLES_PER_BUCKET = Math.round(SAMPLE_RATE * bucketMs / 1000);
 
@@ -879,8 +892,8 @@ async function buildMusicIndex(rootDir) {
 
 // GET /api/index?root=<path> — full recursive index of music root
 app.get('/api/index', async (req, res) => {
-  const root = req.query.root;
-  if (!root) return res.status(400).json({ error: 'root required' });
+  const root = resolveAndValidate(req.query.root, readLibrary());
+  if (!root) return res.status(400).json({ error: 'root required or not within a library folder' });
 
   if (!req.query.bust && indexCache.has(root)) return res.json(indexCache.get(root));
 
@@ -898,8 +911,8 @@ app.get('/api/index', async (req, res) => {
 
 // GET /api/index-stream?root=<path> — SSE stream of index entries as they are found
 app.get('/api/index-stream', async (req, res) => {
-  const root = req.query.root;
-  if (!root) return res.status(400).json({ error: 'root required' });
+  const root = resolveAndValidate(req.query.root, readLibrary());
+  if (!root) return res.status(400).json({ error: 'root required or not within a library folder' });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -985,7 +998,6 @@ app.get('/api/artwork', async (req, res) => {
   } catch (_) {}
 
   // 3. Extract embedded art via ffmpeg
-  const { spawn } = require('child_process');
   const ff = spawn('ffmpeg', [
     '-i', filePath, '-an', '-vcodec', 'copy', '-f', 'image2', 'pipe:1',
   ], { stdio: ['ignore', 'pipe', 'ignore'] });
@@ -1036,7 +1048,6 @@ app.get('/api/artwork', async (req, res) => {
 app.get('/api/reveal', (req, res) => {
   const target = resolveAndValidate(req.query.path, readLibrary());
   if (!target) return res.status(400).json({ error: 'path required' });
-  const { spawn } = require('child_process');
   const plat = process.platform;
   if (plat === 'darwin') {
     spawn('open', ['-R', target], { detached: true }).unref();
@@ -1407,9 +1418,7 @@ app.get('/api/soundcloud/refresh', async (_req, res) => {
 app.get('/api/soundcloud/playlists', async (_req, res) => {
   let config = await readSoundcloudConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSoundcloudToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSoundcloudToken);
   try {
     const scRes = await fetch('https://api.soundcloud.com/me/playlists?limit=50', {
       headers: { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' },
@@ -1426,9 +1435,7 @@ app.get('/api/soundcloud/playlists', async (_req, res) => {
 app.get('/api/soundcloud/liked', async (req, res) => {
   let config = await readSoundcloudConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSoundcloudToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSoundcloudToken);
   try {
     const nextHref = req.query.next_href;
     if (nextHref && !nextHref.startsWith('https://api.soundcloud.com/')) {
@@ -1458,9 +1465,7 @@ const soundcloudCdnCache = new Map();
 app.get('/api/soundcloud/stream/:id', async (req, res) => {
   let config = await readSoundcloudConfig();
   if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { config = await refreshSoundcloudToken(config); } catch (_) {}
-  }
+  config = await ensureFreshToken(config, refreshSoundcloudToken);
 
   const id = req.params.id;
 
@@ -1521,7 +1526,6 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
   }
 
   // Proxy with Range support using https module (reliable Node.js stream piping)
-  const https = require('https');
   try {
     const urlObj = new URL(cdnUrl);
     const upstreamHeaders = {};
