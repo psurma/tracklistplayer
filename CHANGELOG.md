@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.18.1] - 2026-03-23
+
+### Fixed
+- Spectrum graphs failed to load in the packaged Electron app because macOS gives bundled apps a minimal PATH that excludes Homebrew (`/opt/homebrew/bin`). All `ffmpeg` spawns now explicitly augment the process PATH with `/opt/homebrew/bin` and `/usr/local/bin`.
+
 ## [1.18.0] - 2026-03-20
 
 ### Security

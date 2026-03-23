@@ -9,6 +9,13 @@ const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
 const { spawn } = require('child_process');
 const https = require('https');
 
+// Augment PATH so ffmpeg is found when running as a packaged Electron app,
+// which inherits a minimal macOS PATH that excludes Homebrew (/opt/homebrew/bin).
+const SPAWN_ENV = {
+  ...process.env,
+  PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(':'),
+};
+
 const app = express();
 const PORT = 3123;
 
@@ -541,7 +548,7 @@ async function getOrComputeWaveform(filePath, bucketMs) {
     '-i', filePath,
     '-ac', '1', '-ar', String(SAMPLE_RATE),
     '-f', 'f32le', 'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+  ], { stdio: ['ignore', 'pipe', 'ignore'], env: SPAWN_ENV });
 
   const bufs = [];
   ff.stdout.on('data', (c) => bufs.push(c));
@@ -1000,7 +1007,7 @@ app.get('/api/artwork', async (req, res) => {
   // 3. Extract embedded art via ffmpeg
   const ff = spawn('ffmpeg', [
     '-i', filePath, '-an', '-vcodec', 'copy', '-f', 'image2', 'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+  ], { stdio: ['ignore', 'pipe', 'ignore'], env: SPAWN_ENV });
   const bufs = [];
   ff.stdout.on('data', (c) => bufs.push(c));
   const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
