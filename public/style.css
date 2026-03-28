@@ -1550,3 +1550,174 @@ body.darwin #dir-bar { padding-left: 76px; }
 .settings-input-row input::placeholder { color: var(--text-muted); }
 #settings-body { padding: 8px 0 12px; max-height: 70vh; overflow-y: auto; }
 #settings-body code { font-family: inherit; font-size: 10px; background: var(--bg3); padding: 1px 4px; border-radius: 3px; }
+
+/* ── Sleep Timer ────────────────────────────── */
+#btn-sleep { position: relative; }
+#btn-sleep.active { color: var(--accent); }
+#sleep-popover {
+  position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; z-index: 200; white-space: nowrap;
+}
+.sleep-presets { display: flex; gap: 4px; }
+.sleep-presets button {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-size: 11px; padding: 4px 8px; cursor: pointer;
+}
+.sleep-presets button:hover { border-color: var(--accent); }
+#sleep-active { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--text); }
+#sleep-cancel {
+  background: none; border: 1px solid #e05050; color: #e05050; border-radius: var(--radius);
+  font-size: 10px; padding: 2px 6px; cursor: pointer;
+}
+
+/* ── Keyboard Shortcuts Help ────────────────── */
+#shortcuts-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+}
+#shortcuts-modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  width: 320px; max-height: 80vh; overflow-y: auto;
+}
+#shortcuts-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text);
+}
+#shortcuts-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
+#shortcuts-body { padding: 8px 14px 14px; }
+.shortcut-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 12px; color: var(--text); }
+.shortcut-row kbd {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 3px;
+  padding: 1px 6px; font-family: inherit; font-size: 11px; min-width: 28px; text-align: center;
+}
+
+/* ── EQ Panel ───────────────────────────────── */
+#eq-panel {
+  position: absolute; bottom: 48px; right: 80px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px; z-index: 200;
+}
+#eq-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--text);
+}
+#eq-header button { background: none; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 10px; padding: 2px 6px; cursor: pointer; }
+#eq-close { margin-left: auto; border: none !important; font-size: 14px; }
+#eq-sliders { display: flex; gap: 16px; align-items: center; justify-content: center; }
+.eq-band { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.eq-band label { font-size: 10px; color: var(--text-muted); }
+.eq-slider {
+  writing-mode: vertical-lr; direction: rtl;
+  width: 28px; height: 100px;
+  accent-color: var(--accent);
+}
+
+/* ── Bookmarks Panel ────────────────────────── */
+#bookmarks-panel {
+  position: absolute; inset: 0; background: var(--bg); z-index: 30; overflow-y: auto;
+}
+#bookmarks-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text);
+}
+#bookmarks-bar button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; }
+#bookmarks-count { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+#bookmarks-list { padding: 4px 0; }
+.bookmark-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; cursor: pointer; font-size: 12px; color: var(--text);
+}
+.bookmark-item:hover { background: var(--bg2); }
+.bookmark-time { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 48px; }
+.bookmark-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bookmark-delete { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; opacity: 0; }
+.bookmark-item:hover .bookmark-delete { opacity: 1; }
+
+/* ── Play Queue Panel ───────────────────────── */
+#queue-panel {
+  position: absolute; inset: 0; background: var(--bg); z-index: 30; overflow-y: auto;
+}
+#queue-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text);
+}
+#queue-bar button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; }
+#queue-count { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+#queue-clear { margin-left: auto; border: 1px solid var(--border) !important; border-radius: var(--radius); padding: 2px 6px; }
+#queue-list { padding: 4px 0; }
+.queue-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; cursor: pointer; font-size: 12px; color: var(--text);
+}
+.queue-item:hover { background: var(--bg2); }
+.queue-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item-artist { color: var(--text-muted); font-size: 10px; flex-shrink: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; opacity: 0; }
+.queue-item:hover .queue-item-remove { opacity: 1; }
+
+/* ── Track action buttons (queue, spotify save) */
+.track-actions { display: flex; gap: 2px; flex-shrink: 0; margin-left: auto; }
+.track-action-btn {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; opacity: 0; transition: opacity 0.15s;
+}
+.track-item:hover .track-action-btn { opacity: 0.7; }
+.track-action-btn:hover { opacity: 1 !important; color: var(--accent); }
+
+/* ── Disc progress bar ──────────────────────── */
+.disc-progress {
+  height: 2px; background: var(--bg3); margin-top: 2px; border-radius: 1px; overflow: hidden;
+}
+.disc-progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+
+/* ── Resume banner ──────────────────────────── */
+#resume-banner {
+  position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: var(--radius);
+  padding: 8px 14px; z-index: 300; display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--text); box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+#resume-banner button {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-size: 11px; padding: 3px 10px; cursor: pointer;
+}
+#resume-banner button.primary { border-color: var(--accent); color: var(--accent); }
+
+/* ── Export dropdown ────────────────────────── */
+#export-dropdown {
+  position: absolute; bottom: 100%; left: 0;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 4px 0; z-index: 200; min-width: 140px;
+}
+#export-dropdown button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; color: var(--text); font-size: 12px;
+  padding: 6px 12px; cursor: pointer;
+}
+#export-dropdown button:hover { background: var(--bg3); }
+
+/* ── Spotify save modal ─────────────────────── */
+#spotify-save-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+}
+#spotify-save-modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  width: 360px; max-height: 70vh; overflow: hidden; display: flex; flex-direction: column;
+}
+#spotify-save-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text);
+}
+#spotify-save-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
+#spotify-save-body { padding: 10px 14px; overflow-y: auto; flex: 1; }
+.spotify-save-match { padding: 8px; background: var(--bg3); border-radius: var(--radius); margin-bottom: 8px; font-size: 12px; color: var(--text); }
+.spotify-save-match-title { font-weight: 600; }
+.spotify-save-match-artist { color: var(--text-muted); font-size: 11px; }
+.spotify-save-playlists { margin-top: 8px; }
+.spotify-save-playlist {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer;
+  font-size: 12px; color: var(--text); border-radius: var(--radius);
+}
+.spotify-save-playlist:hover { background: var(--bg); }
+.spotify-save-status { font-size: 11px; color: var(--accent); padding: 8px; text-align: center; }

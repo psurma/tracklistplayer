@@ -15,6 +15,8 @@ const state = {
   sidebarCollapsed: false,
   browseDir: '',          // currently browsed folder (folder browser)
   favorites: new Map(),   // keys: "mp3File:trackNumber" → favorite metadata
+  queue: [],              // play queue: [{ discId, trackIdx, title, performer }]
+  bookmarks: {},          // per-file: { mp3Path: [{ time, label }] }
 };
 
 // ── Dual FancyScrubber ────────────────────────────────────────────────────────
@@ -70,6 +72,10 @@ function showLiveSpectrum() {
   document.getElementById('wf-resize-bot').classList.add('hidden');
   liveSpectrumWrap.classList.remove('hidden');
   liveSpectrum.connectAudioElement(audio);
+  // v1.19.0: insert EQ nodes after audio context is created
+  if (audio._lsrCtx && audio._lsrSrc && !eqLowFilter) {
+    initEQ(audio._lsrCtx, audio._lsrSrc, audio._lsrAnalyser);
+  }
   liveSpectrum.start();
 }
 
@@ -189,6 +195,23 @@ const waveformToggle   = document.getElementById('waveform-toggle');
 const miniBtn       = document.getElementById('mini-btn');
 const miniTrack     = document.getElementById('mini-track');
 const miniSub       = document.getElementById('mini-sub');
+// v1.19.0 DOM refs
+const btnSleep        = document.getElementById('btn-sleep');
+const sleepPopover    = document.getElementById('sleep-popover');
+const sleepActive     = document.getElementById('sleep-active');
+const sleepRemaining  = document.getElementById('sleep-remaining');
+const sleepCancelBtn  = document.getElementById('sleep-cancel');
+const queuePanel      = document.getElementById('queue-panel');
+const queueList       = document.getElementById('queue-list');
+const queueCount      = document.getElementById('queue-count');
+const bookmarksPanel  = document.getElementById('bookmarks-panel');
+const bookmarksList   = document.getElementById('bookmarks-list');
+const bookmarksCount  = document.getElementById('bookmarks-count');
+const eqPanel         = document.getElementById('eq-panel');
+const eqLowSlider     = document.getElementById('eq-low');
+const eqMidSlider     = document.getElementById('eq-mid');
+const eqHighSlider    = document.getElementById('eq-high');
+const exportBtn       = document.getElementById('export-btn');
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE = {
@@ -225,6 +248,23 @@ const STORAGE = {
   getStreamSession: ()  => JSON.parse(localStorage.getItem('tlp_stream_session') || 'null'),
   setStreamSession: (v) => localStorage.setItem('tlp_stream_session', JSON.stringify(v)),
   clearStreamSession: () => localStorage.removeItem('tlp_stream_session'),
+  // v1.19.0 additions
+  getDiscProgress: ()  => JSON.parse(localStorage.getItem('tlp_disc_progress') || '{}'),
+  setDiscProgress: (v) => localStorage.setItem('tlp_disc_progress', JSON.stringify(v)),
+  getEqLow:    ()  => parseFloat(localStorage.getItem('tlp_eq_low') || '0'),
+  setEqLow:    (v) => localStorage.setItem('tlp_eq_low', String(v)),
+  getEqMid:    ()  => parseFloat(localStorage.getItem('tlp_eq_mid') || '0'),
+  setEqMid:    (v) => localStorage.setItem('tlp_eq_mid', String(v)),
+  getEqHigh:   ()  => parseFloat(localStorage.getItem('tlp_eq_high') || '0'),
+  setEqHigh:   (v) => localStorage.setItem('tlp_eq_high', String(v)),
+  getBookmarks: ()  => JSON.parse(localStorage.getItem('tlp_bookmarks') || '{}'),
+  setBookmarks: (v) => localStorage.setItem('tlp_bookmarks', JSON.stringify(v)),
+  getQueue:     ()  => JSON.parse(localStorage.getItem('tlp_play_queue') || '[]'),
+  setQueue:     (v) => localStorage.setItem('tlp_play_queue', JSON.stringify(v)),
+  getSpotifyTargetPlaylist: () => localStorage.getItem('tlp_spotify_target_playlist') || '',
+  setSpotifyTargetPlaylist: (v) => localStorage.setItem('tlp_spotify_target_playlist', v),
+  getBpmCache:  ()  => JSON.parse(localStorage.getItem('tlp_bpm_cache') || '{}'),
+  setBpmCache:  (v) => localStorage.setItem('tlp_bpm_cache', JSON.stringify(v)),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1029,9 +1069,15 @@ function loadDisc(disc) {
   if (disc.mp3Path) {
     loadWaveform(disc);
     loadArtwork(disc);
+    // v1.19.0: show export button, load bookmarks, check resume
+    exportBtn.classList.toggle('hidden', !disc.tracks.length);
+    updateScrubberBookmarks();
+    const prog = getDiscProgress(disc.mp3Path);
+    if (prog && prog.position > 10) showResumeBanner(disc, prog);
   } else {
     fancyScrubber.clear();
     wfSection.classList.add('hidden');
+    exportBtn.classList.add('hidden');
   }
 }
 
@@ -1091,6 +1137,18 @@ function renderDiscList() {
     const performer = disc.albumPerformer ? ` — <span>${escapeHtml(disc.albumPerformer)}</span>` : '';
     header.innerHTML = `${escapeHtml(titleText)}${performer}`;
     section.appendChild(header);
+
+    // v1.19.0: disc progress bar
+    if (disc.mp3Path) {
+      const prog = getDiscProgress(disc.mp3Path);
+      if (prog && prog.duration > 0) {
+        const pct = Math.min(100, (prog.position / prog.duration) * 100);
+        const bar = document.createElement('div');
+        bar.className = 'disc-progress';
+        bar.innerHTML = `<div class="disc-progress-fill" style="width:${pct.toFixed(1)}%"></div>`;
+        section.appendChild(bar);
+      }
+    }
 
     if (!disc.mp3Path) {
       const warn = document.createElement('div');
@@ -1167,18 +1225,32 @@ function renderDiscList() {
           <div class="track-title">${escapeHtml(track.title || '(unknown)')}</div>
           ${track.performer ? `<div class="track-performer">${escapeHtml(track.performer)}</div>` : ''}
         </span>
+        <span class="track-actions">
+          <button class="track-action-btn track-queue-btn" title="Add to queue">+</button>
+          <button class="track-action-btn track-spotify-btn" title="Save to Spotify">&#9834;</button>
+        </span>
         <button class="fav-btn${isFav ? ' fav-active' : ''}" data-key="${escapeHtml(favKey(disc.mp3File, track.track))}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
         <span class="track-time">${formatTime(track.startSeconds)}</span>
       `;
 
       item.addEventListener('click', (e) => {
-        if (e.target.closest('.fav-btn')) return;
+        if (e.target.closest('.fav-btn') || e.target.closest('.track-action-btn')) return;
         playDiscAtTrack(disc, i);
       });
 
       item.querySelector('.fav-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         toggleFavorite(disc, i, e.currentTarget);
+      });
+
+      item.querySelector('.track-queue-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        addToQueue(disc, i);
+      });
+
+      item.querySelector('.track-spotify-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        openSpotifySaveModal(track.title, track.performer || disc.albumPerformer);
       });
 
       section.appendChild(item);
@@ -2435,6 +2507,12 @@ audio.addEventListener('timeupdate', () => {
     updateNowPlaying(newIdx);
     highlightTrackInSidebar(state.currentDiscId, newIdx);
     if (!nfoPane.classList.contains('hidden')) { highlightNfo(); highlightTracklist(); }
+    // v1.19.0: scrobble + discord
+    const _disc = currentDisc();
+    if (_disc && newIdx >= 0) {
+      checkScrobble(_disc, newIdx);
+      updateDiscordPresence(_disc, newIdx);
+    }
   }
   updateTrackProgress();
   // Save play state every ~10 s
@@ -2460,7 +2538,10 @@ audio.addEventListener('loadedmetadata', () => {
   }
 });
 
-audio.addEventListener('play',  () => { btnPlay.innerHTML = '&#9646;&#9646;'; });
+audio.addEventListener('play',  () => {
+  btnPlay.innerHTML = '&#9646;&#9646;';
+  window.electronAPI?.fixAudioInput();
+});
 audio.addEventListener('pause', () => {
   btnPlay.innerHTML = '&#9654;';
   if (soundcloudMode && soundcloudActiveIdx >= 0) {
@@ -2470,6 +2551,7 @@ audio.addEventListener('pause', () => {
   const disc = currentDisc();
   if (disc && disc.mp3Path) {
     STORAGE.setPlayState({ mp3Path: disc.mp3Path, trackIdx: state.currentTrackIndex, position: audio.currentTime });
+    saveDiscProgress(); // v1.19.0
   }
 });
 // Pause Spotify whenever local audio starts, so both can't play simultaneously
@@ -2495,6 +2577,8 @@ audio.addEventListener('ended', () => {
     audio.currentTime = t ? t.startSeconds : 0;
     audio.play().catch(() => {});
   } else {
+    // v1.19.0: check play queue before auto-advancing
+    if (playFromQueue()) return;
     const next = nextTrackIndex(disc, state.currentTrackIndex);
     if (next >= 0) {
       playDiscAtTrack(disc, next);
@@ -2600,11 +2684,64 @@ seekBar.addEventListener('change', () => {
 volumeBar.addEventListener('input', () => { audio.volume = volumeBar.value; });
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
+let _savedVolume = 1;
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select, [contenteditable]')) return;
-  if (e.key === ' ') { e.preventDefault(); btnPlay.click(); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); btnNext.click(); }
-  else if (e.key === 'ArrowRight') { e.preventDefault(); btnPrev.click(); }
+  const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+  switch (e.key) {
+    case ' ':
+      e.preventDefault(); btnPlay.click(); break;
+    case 'ArrowLeft':
+      e.preventDefault(); btnPrev.click(); break;
+    case 'ArrowRight':
+      e.preventDefault(); btnNext.click(); break;
+    case 'ArrowUp':
+      if (e.shiftKey) { e.preventDefault(); audio.volume = Math.min(1, audio.volume + 0.05); volumeBar.value = audio.volume; } break;
+    case 'ArrowDown':
+      if (e.shiftKey) { e.preventDefault(); audio.volume = Math.max(0, audio.volume - 0.05); volumeBar.value = audio.volume; } break;
+    case 'j': case 'J':
+      e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 10); break;
+    case 'l': case 'L':
+      e.preventDefault(); if (isFinite(audio.duration)) audio.currentTime = Math.min(audio.duration, audio.currentTime + 10); break;
+    case 'm': case 'M':
+      e.preventDefault();
+      if (audio.volume > 0) { _savedVolume = audio.volume; audio.volume = 0; }
+      else { audio.volume = _savedVolume || 1; }
+      volumeBar.value = audio.volume;
+      break;
+    case 'f': case 'F':
+      e.preventDefault();
+      { const disc = currentDisc(); if (disc && state.currentTrackIndex >= 0) {
+        const el = document.querySelector(`.track-item[data-disc="${disc.id}"][data-track="${state.currentTrackIndex}"] .fav-btn`);
+        if (el) el.click();
+      }} break;
+    case 'b': case 'B':
+      e.preventDefault();
+      { const label = prompt('Bookmark label:', `Bookmark @ ${formatTime(audio.currentTime)}`);
+        if (label !== null) addBookmark(label); }
+      break;
+    case 'q': case 'Q':
+      e.preventDefault(); queuePanel.classList.toggle('hidden'); bookmarksPanel.classList.add('hidden'); break;
+    case '?':
+      e.preventDefault(); shortcutsOverlay.classList.toggle('hidden'); break;
+    case 'Escape':
+      shortcutsOverlay.classList.add('hidden');
+      eqPanel.classList.add('hidden');
+      sleepPopover.classList.add('hidden');
+      queuePanel.classList.add('hidden');
+      bookmarksPanel.classList.add('hidden');
+      break;
+    default:
+      if (e.key >= '1' && e.key <= '9') {
+        const disc = currentDisc();
+        if (disc && disc.tracks.length >= parseInt(e.key, 10)) {
+          e.preventDefault(); playDiscAtTrack(disc, parseInt(e.key, 10) - 1);
+        }
+      }
+  }
+});
+document.getElementById('shortcuts-close')?.addEventListener('click', () => {
+  document.getElementById('shortcuts-overlay').classList.add('hidden');
 });
 
 // ── Shuffle & repeat ──────────────────────────────────────────────────────────
@@ -3890,4 +4027,535 @@ function loadDroppedFiles(files) {
   });
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// v1.19.0 FEATURES
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Sleep Timer ──────────────────────────────────────────────────────────────
+let _sleepInterval = null;
+let _sleepSecsLeft = 0;
+
+function startSleepTimer(mins) {
+  clearSleepTimer();
+  _sleepSecsLeft = mins * 60;
+  btnSleep.classList.add('active');
+  sleepActive.classList.remove('hidden');
+  _sleepInterval = setInterval(() => {
+    _sleepSecsLeft--;
+    sleepRemaining.textContent = formatTime(_sleepSecsLeft);
+    if (_sleepSecsLeft <= 0) {
+      audio.pause();
+      clearSleepTimer();
+    }
+  }, 1000);
+  sleepRemaining.textContent = formatTime(_sleepSecsLeft);
+  sleepPopover.classList.add('hidden');
+}
+
+function clearSleepTimer() {
+  if (_sleepInterval) clearInterval(_sleepInterval);
+  _sleepInterval = null;
+  _sleepSecsLeft = 0;
+  btnSleep.classList.remove('active');
+  sleepActive.classList.add('hidden');
+}
+
+btnSleep.addEventListener('click', () => {
+  sleepPopover.classList.toggle('hidden');
+});
+sleepPopover.querySelector('.sleep-presets').addEventListener('click', (e) => {
+  const mins = e.target.dataset?.mins;
+  if (mins) startSleepTimer(parseInt(mins, 10));
+});
+sleepCancelBtn.addEventListener('click', () => {
+  clearSleepTimer();
+  sleepPopover.classList.add('hidden');
+});
+
+// ── Tracklist Export ─────────────────────────────────────────────────────────
+function exportTracklistAsText() {
+  const disc = currentDisc();
+  if (!disc || !disc.tracks.length) return;
+  const lines = disc.tracks.map((t) => {
+    const num = String(t.track).padStart(2, '0');
+    const time = formatTime(t.startSeconds);
+    const artist = t.performer ? `${t.performer} - ` : '';
+    return `${num}. ${artist}${t.title} [${time}]`;
+  });
+  const header = disc.albumTitle ? `${disc.albumTitle}\n${'─'.repeat(disc.albumTitle.length)}\n` : '';
+  navigator.clipboard.writeText(header + lines.join('\n')).then(() => {
+    showToast('Tracklist copied to clipboard');
+  });
+}
+
+function exportTracklistAsM3U() {
+  const disc = currentDisc();
+  if (!disc || !disc.tracks.length) return;
+  let m3u = '#EXTM3U\n';
+  disc.tracks.forEach((t) => {
+    const dur = Math.round(t.durationSeconds || 0);
+    const artist = t.performer || disc.albumPerformer || 'Unknown';
+    m3u += `#EXTINF:${dur},${artist} - ${t.title}\n`;
+    m3u += `${disc.mp3File}\n`;
+  });
+  const blob = new Blob([m3u], { type: 'audio/x-mpegurl' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (disc.albumTitle || disc.mp3File).replace(/\.[^.]+$/, '') + '.m3u';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function showToast(msg) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:var(--bg2);border:1px solid var(--accent);color:var(--text);padding:6px 14px;border-radius:var(--radius);font-size:12px;z-index:9999;pointer-events:none;';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
+let _exportDropdown = null;
+exportBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (_exportDropdown) { _exportDropdown.remove(); _exportDropdown = null; return; }
+  const dd = document.createElement('div');
+  dd.id = 'export-dropdown';
+  const b1 = document.createElement('button');
+  b1.textContent = 'Copy as text';
+  b1.addEventListener('click', () => { exportTracklistAsText(); dd.remove(); _exportDropdown = null; });
+  const b2 = document.createElement('button');
+  b2.textContent = 'Download M3U';
+  b2.addEventListener('click', () => { exportTracklistAsM3U(); dd.remove(); _exportDropdown = null; });
+  dd.append(b1, b2);
+  exportBtn.style.position = 'relative';
+  exportBtn.appendChild(dd);
+  _exportDropdown = dd;
+});
+document.addEventListener('click', () => { if (_exportDropdown) { _exportDropdown.remove(); _exportDropdown = null; } });
+
+// ── Playback Progress Per Mix ────────────────────────────────────────────────
+function saveDiscProgress() {
+  const disc = currentDisc();
+  if (!disc || !disc.mp3Path || !isFinite(audio.duration)) return;
+  const prog = STORAGE.getDiscProgress();
+  prog[disc.mp3Path] = {
+    position: audio.currentTime,
+    duration: audio.duration,
+    trackIdx: state.currentTrackIndex,
+    ts: Date.now(),
+  };
+  // Keep max 200 entries
+  const keys = Object.keys(prog);
+  if (keys.length > 200) {
+    keys.sort((a, b) => prog[a].ts - prog[b].ts);
+    keys.slice(0, keys.length - 200).forEach((k) => delete prog[k]);
+  }
+  STORAGE.setDiscProgress(prog);
+}
+
+function getDiscProgress(mp3Path) {
+  const prog = STORAGE.getDiscProgress();
+  return prog[mp3Path] || null;
+}
+
+function showResumeBanner(disc, progress) {
+  const existing = document.getElementById('resume-banner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = 'resume-banner';
+  banner.innerHTML = `Resume from ${formatTime(progress.position)}?
+    <button class="primary" id="resume-yes">Resume</button>
+    <button id="resume-no">Start Over</button>`;
+  document.body.appendChild(banner);
+  document.getElementById('resume-yes').addEventListener('click', () => {
+    audio.currentTime = progress.position;
+    audio.play().catch(() => {});
+    banner.remove();
+  });
+  document.getElementById('resume-no').addEventListener('click', () => {
+    audio.play().catch(() => {});
+    banner.remove();
+  });
+  setTimeout(() => { if (banner.parentNode) banner.remove(); }, 10000);
+}
+
+// ── Play Queue ───────────────────────────────────────────────────────────────
+function addToQueue(disc, trackIdx) {
+  const t = disc.tracks[trackIdx];
+  if (!t) return;
+  state.queue.push({
+    discId: disc.id,
+    trackIdx,
+    title: t.title || disc.albumTitle,
+    performer: t.performer || disc.albumPerformer || '',
+  });
+  STORAGE.setQueue(state.queue);
+  renderQueue();
+  showToast('Added to queue');
+}
+
+function renderQueue() {
+  queueList.innerHTML = '';
+  queueCount.textContent = state.queue.length ? `(${state.queue.length})` : '';
+  state.queue.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'queue-item';
+    row.innerHTML = `<span class="queue-item-title">${escapeHtml(item.title)}</span>
+      <span class="queue-item-artist">${escapeHtml(item.performer)}</span>
+      <button class="queue-item-remove" title="Remove">&#x2715;</button>`;
+    row.querySelector('.queue-item-remove').addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.queue.splice(i, 1);
+      STORAGE.setQueue(state.queue);
+      renderQueue();
+    });
+    row.addEventListener('click', () => {
+      const entry = state.queue.splice(i, 1)[0];
+      STORAGE.setQueue(state.queue);
+      renderQueue();
+      const disc = state.discs.find((d) => d.id === entry.discId);
+      if (disc) playDiscAtTrack(disc, entry.trackIdx);
+    });
+    queueList.appendChild(row);
+  });
+}
+
+function playFromQueue() {
+  if (!state.queue.length) return false;
+  const entry = state.queue.shift();
+  STORAGE.setQueue(state.queue);
+  renderQueue();
+  const disc = state.discs.find((d) => d.id === entry.discId);
+  if (disc) { playDiscAtTrack(disc, entry.trackIdx); return true; }
+  return false;
+}
+
+document.getElementById('queue-btn').addEventListener('click', () => {
+  queuePanel.classList.toggle('hidden');
+  bookmarksPanel.classList.add('hidden');
+});
+document.getElementById('queue-close').addEventListener('click', () => queuePanel.classList.add('hidden'));
+document.getElementById('queue-clear').addEventListener('click', () => {
+  state.queue = [];
+  STORAGE.setQueue([]);
+  renderQueue();
+});
+
+// ── Bookmarks ────────────────────────────────────────────────────────────────
+function loadBookmarks() {
+  state.bookmarks = STORAGE.getBookmarks();
+}
+
+function saveBookmarks() {
+  STORAGE.setBookmarks(state.bookmarks);
+}
+
+function addBookmark(label) {
+  const disc = currentDisc();
+  if (!disc || !disc.mp3Path) return;
+  const key = disc.mp3Path;
+  if (!state.bookmarks[key]) state.bookmarks[key] = [];
+  state.bookmarks[key].push({ time: audio.currentTime, label: label || `Bookmark @ ${formatTime(audio.currentTime)}` });
+  state.bookmarks[key].sort((a, b) => a.time - b.time);
+  saveBookmarks();
+  renderBookmarks();
+  updateScrubberBookmarks();
+  showToast('Bookmark added');
+}
+
+function renderBookmarks() {
+  const disc = currentDisc();
+  const key = disc?.mp3Path;
+  const bms = key ? (state.bookmarks[key] || []) : [];
+  bookmarksCount.textContent = bms.length ? `(${bms.length})` : '';
+  bookmarksList.innerHTML = '';
+  bms.forEach((bm, i) => {
+    const row = document.createElement('div');
+    row.className = 'bookmark-item';
+    row.innerHTML = `<span class="bookmark-time">${formatTime(bm.time)}</span>
+      <span class="bookmark-label">${escapeHtml(bm.label)}</span>
+      <button class="bookmark-delete" title="Remove">&#x2715;</button>`;
+    row.querySelector('.bookmark-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.bookmarks[key].splice(i, 1);
+      if (!state.bookmarks[key].length) delete state.bookmarks[key];
+      saveBookmarks();
+      renderBookmarks();
+      updateScrubberBookmarks();
+    });
+    row.addEventListener('click', () => {
+      audio.currentTime = bm.time;
+      if (audio.paused) audio.play().catch(() => {});
+    });
+    bookmarksList.appendChild(row);
+  });
+}
+
+function updateScrubberBookmarks() {
+  const disc = currentDisc();
+  const key = disc?.mp3Path;
+  const bms = key ? (state.bookmarks[key] || []) : [];
+  if (ovScrubber) ovScrubber.setBookmarks(bms);
+  if (zmScrubber) zmScrubber.setBookmarks(bms);
+}
+
+document.getElementById('bookmarks-btn').addEventListener('click', () => {
+  bookmarksPanel.classList.toggle('hidden');
+  queuePanel.classList.add('hidden');
+  renderBookmarks();
+});
+document.getElementById('bookmarks-close').addEventListener('click', () => bookmarksPanel.classList.add('hidden'));
+
+// ── 3-Band EQ ────────────────────────────────────────────────────────────────
+let eqLowFilter = null, eqMidFilter = null, eqHighFilter = null;
+
+function initEQ(audioCtx, sourceNode, analyserNode) {
+  eqLowFilter = audioCtx.createBiquadFilter();
+  eqLowFilter.type = 'lowshelf';
+  eqLowFilter.frequency.value = 200;
+  eqLowFilter.gain.value = STORAGE.getEqLow();
+
+  eqMidFilter = audioCtx.createBiquadFilter();
+  eqMidFilter.type = 'peaking';
+  eqMidFilter.frequency.value = 1000;
+  eqMidFilter.Q.value = 1;
+  eqMidFilter.gain.value = STORAGE.getEqMid();
+
+  eqHighFilter = audioCtx.createBiquadFilter();
+  eqHighFilter.type = 'highshelf';
+  eqHighFilter.frequency.value = 8000;
+  eqHighFilter.gain.value = STORAGE.getEqHigh();
+
+  // Rewire: source → low → mid → high → analyser → destination
+  sourceNode.disconnect();
+  analyserNode.disconnect();
+  sourceNode.connect(eqLowFilter);
+  eqLowFilter.connect(eqMidFilter);
+  eqMidFilter.connect(eqHighFilter);
+  eqHighFilter.connect(analyserNode);
+  analyserNode.connect(audioCtx.destination);
+
+  // Sync sliders
+  eqLowSlider.value = STORAGE.getEqLow();
+  eqMidSlider.value = STORAGE.getEqMid();
+  eqHighSlider.value = STORAGE.getEqHigh();
+}
+
+eqLowSlider.addEventListener('input', () => {
+  const v = parseFloat(eqLowSlider.value);
+  if (eqLowFilter) eqLowFilter.gain.value = v;
+  STORAGE.setEqLow(v);
+});
+eqMidSlider.addEventListener('input', () => {
+  const v = parseFloat(eqMidSlider.value);
+  if (eqMidFilter) eqMidFilter.gain.value = v;
+  STORAGE.setEqMid(v);
+});
+eqHighSlider.addEventListener('input', () => {
+  const v = parseFloat(eqHighSlider.value);
+  if (eqHighFilter) eqHighFilter.gain.value = v;
+  STORAGE.setEqHigh(v);
+});
+
+document.getElementById('eq-btn').addEventListener('click', () => eqPanel.classList.toggle('hidden'));
+document.getElementById('eq-close').addEventListener('click', () => eqPanel.classList.add('hidden'));
+document.getElementById('eq-reset').addEventListener('click', () => {
+  eqLowSlider.value = 0; eqMidSlider.value = 0; eqHighSlider.value = 0;
+  if (eqLowFilter) eqLowFilter.gain.value = 0;
+  if (eqMidFilter) eqMidFilter.gain.value = 0;
+  if (eqHighFilter) eqHighFilter.gain.value = 0;
+  STORAGE.setEqLow(0); STORAGE.setEqMid(0); STORAGE.setEqHigh(0);
+});
+
+// ── Last.fm Scrobbling ───────────────────────────────────────────────────────
+let _scrobbleState = { trackKey: '', startTime: 0, scrobbled: false };
+
+function lastfmUpdateNowPlaying(disc, trackIdx) {
+  const t = disc.tracks[trackIdx];
+  if (!t) return;
+  fetch('/api/lastfm/now-playing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: t.performer || disc.albumPerformer || 'Unknown',
+      track: t.title || 'Unknown',
+      album: disc.albumTitle || '',
+    }),
+  }).catch(() => {});
+}
+
+function lastfmScrobble(disc, trackIdx) {
+  const t = disc.tracks[trackIdx];
+  if (!t) return;
+  fetch('/api/lastfm/scrobble', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: t.performer || disc.albumPerformer || 'Unknown',
+      track: t.title || 'Unknown',
+      album: disc.albumTitle || '',
+      timestamp: Math.floor(Date.now() / 1000),
+    }),
+  }).catch(() => {});
+}
+
+function checkScrobble(disc, trackIdx) {
+  const t = disc.tracks[trackIdx];
+  if (!t) return;
+  const key = `${disc.mp3Path}:${trackIdx}`;
+  if (_scrobbleState.trackKey !== key) {
+    // New track started — scrobble old if eligible
+    if (_scrobbleState.trackKey && !_scrobbleState.scrobbled) {
+      const elapsed = (Date.now() - _scrobbleState.startTime) / 1000;
+      if (elapsed >= 30) {
+        const [oldPath, oldIdx] = _scrobbleState.trackKey.split(':');
+        const oldDisc = state.discs.find((d) => d.mp3Path === oldPath);
+        if (oldDisc) lastfmScrobble(oldDisc, parseInt(oldIdx, 10));
+      }
+    }
+    _scrobbleState = { trackKey: key, startTime: Date.now(), scrobbled: false };
+    lastfmUpdateNowPlaying(disc, trackIdx);
+  } else if (!_scrobbleState.scrobbled) {
+    const elapsed = (Date.now() - _scrobbleState.startTime) / 1000;
+    const trackDur = t.durationSeconds || 240;
+    if (elapsed >= 30 && elapsed >= trackDur * 0.5) {
+      lastfmScrobble(disc, trackIdx);
+      _scrobbleState.scrobbled = true;
+    }
+  }
+}
+
+// Last.fm settings
+document.getElementById('lastfm-save-creds-btn')?.addEventListener('click', async () => {
+  const apiKey = document.getElementById('lastfm-api-key-input').value.trim();
+  const sharedSecret = document.getElementById('lastfm-shared-secret-input').value.trim();
+  if (!apiKey || !sharedSecret) return;
+  const statusEl = document.getElementById('lastfm-settings-status');
+  const res = await fetch('/api/lastfm/credentials', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey, sharedSecret }),
+  });
+  statusEl.textContent = res.ok ? 'Credentials saved' : 'Failed to save';
+});
+
+document.getElementById('lastfm-connect-btn')?.addEventListener('click', async () => {
+  const res = await fetch('/api/lastfm/auth-url');
+  if (!res.ok) return;
+  const { url } = await res.json();
+  window.open(url, '_blank');
+  document.getElementById('lastfm-settings-status').textContent = 'Authorize in browser, then return here...';
+  // Poll for connection
+  const poll = setInterval(async () => {
+    const r = await fetch('/api/lastfm/config');
+    if (!r.ok) return;
+    const cfg = await r.json();
+    if (cfg.connected) {
+      clearInterval(poll);
+      document.getElementById('lastfm-settings-status').textContent = `Connected as ${cfg.username}`;
+      document.getElementById('lastfm-disconnect-row').classList.remove('hidden');
+    }
+  }, 3000);
+  setTimeout(() => clearInterval(poll), 120000);
+});
+
+document.getElementById('lastfm-disconnect-btn')?.addEventListener('click', async () => {
+  await fetch('/api/lastfm/disconnect');
+  document.getElementById('lastfm-settings-status').textContent = 'Disconnected';
+  document.getElementById('lastfm-disconnect-row').classList.add('hidden');
+});
+
+// ── Save to Spotify Playlist ─────────────────────────────────────────────────
+async function openSpotifySaveModal(title, performer) {
+  const overlay = document.getElementById('spotify-save-overlay');
+  const matchEl = document.getElementById('spotify-save-match');
+  const statusEl = document.getElementById('spotify-save-status');
+  const playlistsEl = document.getElementById('spotify-save-playlists');
+  overlay.classList.remove('hidden');
+  matchEl.innerHTML = '';
+  statusEl.textContent = 'Searching Spotify...';
+  playlistsEl.innerHTML = '';
+
+  const q = encodeURIComponent(`${performer ? performer + ' ' : ''}${title}`);
+  try {
+    const searchRes = await fetch(`/api/spotify/search?q=${q}&type=track`);
+    if (!searchRes.ok) { statusEl.textContent = 'Search failed'; return; }
+    const data = await searchRes.json();
+    const tracks = data.tracks?.items || [];
+    if (!tracks.length) { statusEl.textContent = 'No matches found'; return; }
+    const track = tracks[0];
+    matchEl.innerHTML = `<div class="spotify-save-match">
+      <div class="spotify-save-match-title">${escapeHtml(track.name)}</div>
+      <div class="spotify-save-match-artist">${escapeHtml(track.artists.map((a) => a.name).join(', '))}</div>
+    </div>`;
+    statusEl.textContent = 'Select a playlist:';
+
+    const plRes = await fetch('/api/spotify/playlists');
+    if (!plRes.ok) { statusEl.textContent = 'Failed to load playlists'; return; }
+    const plData = await plRes.json();
+    const playlists = plData.items || plData || [];
+    playlists.forEach((pl) => {
+      const row = document.createElement('div');
+      row.className = 'spotify-save-playlist';
+      row.textContent = pl.name;
+      row.addEventListener('click', async () => {
+        statusEl.textContent = 'Adding...';
+        const addRes = await fetch('/api/spotify/add-to-playlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playlistId: pl.id, trackUri: track.uri }),
+        });
+        statusEl.textContent = addRes.ok ? 'Added!' : 'Failed to add';
+        STORAGE.setSpotifyTargetPlaylist(pl.id);
+        setTimeout(() => overlay.classList.add('hidden'), 1500);
+      });
+      playlistsEl.appendChild(row);
+    });
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+  }
+}
+
+document.getElementById('spotify-save-close')?.addEventListener('click', () => {
+  document.getElementById('spotify-save-overlay').classList.add('hidden');
+});
+document.getElementById('spotify-save-overlay')?.addEventListener('click', (e) => {
+  if (e.target.id === 'spotify-save-overlay') e.target.classList.add('hidden');
+});
+
+// ── Discord Rich Presence ────────────────────────────────────────────────────
+function updateDiscordPresence(disc, trackIdx) {
+  if (!window.electronAPI?.updateDiscordPresence) return;
+  const t = disc?.tracks?.[trackIdx];
+  window.electronAPI.updateDiscordPresence({
+    track: t?.title || disc?.albumTitle || '',
+    artist: t?.performer || disc?.albumPerformer || '',
+    mix: disc?.albumTitle || '',
+    playing: !audio.paused,
+    elapsed: audio.currentTime,
+  });
+}
+
+// ── Last.fm config init ──────────────────────────────────────────────────────
+async function initLastfmSettings() {
+  try {
+    const res = await fetch('/api/lastfm/config');
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (cfg.api_key) document.getElementById('lastfm-api-key-input').value = cfg.api_key;
+    if (cfg.connected) {
+      document.getElementById('lastfm-settings-status').textContent = `Connected as ${cfg.username}`;
+      document.getElementById('lastfm-disconnect-row').classList.remove('hidden');
+    }
+  } catch (_) {}
+}
+
 init();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DEFERRED INIT (after init)
+// ══════════════════════════════════════════════════════════════════════════════
+loadBookmarks();
+state.queue = STORAGE.getQueue();
+renderQueue();
+initLastfmSettings();

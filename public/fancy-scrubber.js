@@ -98,6 +98,11 @@ class FancyScrubber {
     this._draw();
   }
 
+  setBookmarks(bookmarks) {
+    this._bookmarks = bookmarks || [];
+    this._draw();
+  }
+
   // ── Private ──────────────────────────────────────────────────────────────────
 
   _setup(canvas) {
@@ -286,6 +291,23 @@ class FancyScrubber {
     for (const t of tracks) {
       const x = Math.round((t.startSeconds - scrollSecs) * pixelsPerSec);
       if (x >= 0 && x <= W) ctx.fillRect(x, wfTop, 1, wfH);
+    }
+
+    // ── Bookmark markers ─────────────────────────────────────────────────────
+    if (this._bookmarks && this._bookmarks.length) {
+      for (const bm of this._bookmarks) {
+        const bx = Math.round((bm.time - scrollSecs) * pixelsPerSec);
+        if (bx < -4 || bx > W + 4) continue;
+        ctx.fillStyle = '#ff6b6b';
+        ctx.beginPath();
+        ctx.moveTo(bx - 4, wfTop);
+        ctx.lineTo(bx + 4, wfTop);
+        ctx.lineTo(bx, wfTop + 8);
+        ctx.closePath();
+        ctx.fill();
+        // Thin vertical line
+        ctx.fillRect(bx, wfTop, 1, wfH);
+      }
     }
 
     // ── Ruler + Playhead ─────────────────────────────────────────────────────

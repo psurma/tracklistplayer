@@ -101,6 +101,10 @@
         <button id="finder-btn" title="Reveal file" class="hidden">⌘</button>
         <button id="nfo-btn" title="Toggle NFO" class="hidden">☰</button>
         <button id="tl-btn" title="Find tracklist online" class="hidden">≣</button>
+        <button id="queue-btn" title="Play queue">&#9776;</button>
+        <button id="bookmarks-btn" title="Bookmarks">&#x1F516;</button>
+        <button id="eq-btn" title="Equalizer">EQ</button>
+        <button id="export-btn" title="Export tracklist" class="hidden">&#x2913;</button>
         <button id="library-btn" title="Manage library">&#9783;</button>
         <button id="search-btn" title="Search collection">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="22" y2="22"/></svg>
@@ -180,6 +184,24 @@
               </div>
             </div>
             <div class="settings-section">
+              <div class="settings-label">Last.fm</div>
+              <div class="settings-hint">1. Go to last.fm/api/account/create → Create API account<br>2. Enter API Key and Shared Secret below, then Connect</div>
+              <div class="settings-input-row">
+                <input type="text" id="lastfm-api-key-input" placeholder="API Key" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="settings-input-row">
+                <input type="password" id="lastfm-shared-secret-input" placeholder="Shared Secret" autocomplete="off" />
+              </div>
+              <div class="settings-row" style="margin-top:8px">
+                <button class="seg-btn" id="lastfm-save-creds-btn">Save</button>
+                <button class="seg-btn" id="lastfm-connect-btn">Connect</button>
+              </div>
+              <div id="lastfm-settings-status" class="settings-hint" style="margin-top:6px"></div>
+              <div id="lastfm-disconnect-row" class="settings-row hidden" style="margin-top:6px">
+                <button class="seg-btn" id="lastfm-disconnect-btn" style="color:#e05050;border-color:#e05050">Disconnect</button>
+              </div>
+            </div>
+            <div class="settings-section">
               <div class="settings-label">SoundCloud</div>
               <div class="settings-hint">1. Go to soundcloud.com/you/apps → Register a new app<br>2. Set Redirect URI: <code>http://127.0.0.1:3123/auth/soundcloud/callback</code><br>3. Enter credentials below and click Save, then Connect</div>
               <div class="settings-input-row">
@@ -229,6 +251,75 @@
         <div id="favs-list"></div>
       </div>
 
+      <!-- Bookmarks panel -->
+      <div id="bookmarks-panel" class="hidden">
+        <div id="bookmarks-bar">
+          <span>Bookmarks</span>
+          <span id="bookmarks-count"></span>
+          <button id="bookmarks-close" title="Close">&#x2715;</button>
+        </div>
+        <div id="bookmarks-list"></div>
+      </div>
+
+      <!-- Play Queue panel -->
+      <div id="queue-panel" class="hidden">
+        <div id="queue-bar">
+          <span>Up Next</span>
+          <span id="queue-count"></span>
+          <button id="queue-clear" title="Clear queue">Clear</button>
+          <button id="queue-close" title="Close">&#x2715;</button>
+        </div>
+        <div id="queue-list"></div>
+      </div>
+
+      <!-- Keyboard shortcuts help overlay -->
+      <div id="shortcuts-overlay" class="hidden">
+        <div id="shortcuts-modal">
+          <div id="shortcuts-header">
+            <span>Keyboard Shortcuts</span>
+            <button id="shortcuts-close" title="Close">&#x2715;</button>
+          </div>
+          <div id="shortcuts-body">
+            <div class="shortcut-row"><kbd>Space</kbd><span>Play / Pause</span></div>
+            <div class="shortcut-row"><kbd>&#x2190;</kbd><span>Previous track</span></div>
+            <div class="shortcut-row"><kbd>&#x2192;</kbd><span>Next track</span></div>
+            <div class="shortcut-row"><kbd>J</kbd><span>Seek -10 s</span></div>
+            <div class="shortcut-row"><kbd>L</kbd><span>Seek +10 s</span></div>
+            <div class="shortcut-row"><kbd>Shift+&#x2191;</kbd><span>Volume up</span></div>
+            <div class="shortcut-row"><kbd>Shift+&#x2193;</kbd><span>Volume down</span></div>
+            <div class="shortcut-row"><kbd>M</kbd><span>Mute / Unmute</span></div>
+            <div class="shortcut-row"><kbd>F</kbd><span>Toggle star</span></div>
+            <div class="shortcut-row"><kbd>B</kbd><span>Add bookmark</span></div>
+            <div class="shortcut-row"><kbd>Q</kbd><span>Toggle queue</span></div>
+            <div class="shortcut-row"><kbd>1-9</kbd><span>Jump to track</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>Close panel</span></div>
+            <div class="shortcut-row"><kbd>?</kbd><span>This help</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EQ panel -->
+      <div id="eq-panel" class="hidden">
+        <div id="eq-header">
+          <span>EQ</span>
+          <button id="eq-reset" title="Reset">Reset</button>
+          <button id="eq-close" title="Close">&#x2715;</button>
+        </div>
+        <div id="eq-sliders">
+          <div class="eq-band">
+            <input type="range" id="eq-low" class="eq-slider" min="-12" max="12" step="0.5" value="0" orient="vertical" />
+            <label>Lo</label>
+          </div>
+          <div class="eq-band">
+            <input type="range" id="eq-mid" class="eq-slider" min="-12" max="12" step="0.5" value="0" orient="vertical" />
+            <label>Mid</label>
+          </div>
+          <div class="eq-band">
+            <input type="range" id="eq-high" class="eq-slider" min="-12" max="12" step="0.5" value="0" orient="vertical" />
+            <label>Hi</label>
+          </div>
+        </div>
+      </div>
 
       <!-- Top section (resizable) -->
       <div id="main-top">
@@ -313,6 +404,20 @@
       <button id="btn-play" title="Play / Pause">&#9654;</button>
       <button id="btn-next" title="Next track">&#9654;&#9654;</button>
       <button id="btn-repeat" title="Repeat">&#x21BB;</button>
+      <button id="btn-sleep" title="Sleep timer">&#x23F2;</button>
+    </div>
+    <div id="sleep-popover" class="hidden">
+      <div class="sleep-presets">
+        <button data-mins="15">15m</button>
+        <button data-mins="30">30m</button>
+        <button data-mins="45">45m</button>
+        <button data-mins="60">60m</button>
+        <button data-mins="90">90m</button>
+      </div>
+      <div id="sleep-active" class="hidden">
+        <span id="sleep-remaining"></span>
+        <button id="sleep-cancel">Cancel</button>
+      </div>
     </div>
 
     <div id="seek-row">
@@ -389,6 +494,21 @@
     </div>
   </div>
 
+  <!-- Spotify save-to-playlist modal -->
+  <div id="spotify-save-overlay" class="hidden">
+    <div id="spotify-save-modal">
+      <div id="spotify-save-header">
+        <span>Save to Spotify</span>
+        <button id="spotify-save-close">&#x2715;</button>
+      </div>
+      <div id="spotify-save-body">
+        <div id="spotify-save-match"></div>
+        <div id="spotify-save-status"></div>
+        <div id="spotify-save-playlists" class="spotify-save-playlists"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="drop-overlay">
     <div id="drop-overlay-inner">
       <div id="drop-overlay-icon">&#9835;</div>
@@ -424,10 +544,10 @@
     </div>
   </div>
 
-  <script src="waveform.js?v=1.18.1"></script>
-  <script src="spectrum.js?v=1.18.1"></script>
-  <script src="fancy-scrubber.js?v=1.18.1"></script>
-  <script src="app.js?v=1.18.1"></script>
+  <script src="waveform.js?v=1.19.0"></script>
+  <script src="spectrum.js?v=1.19.0"></script>
+  <script src="fancy-scrubber.js?v=1.19.0"></script>
+  <script src="app.js?v=1.19.0"></script>
   <script async src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>

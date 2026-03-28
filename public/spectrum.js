@@ -36,6 +36,7 @@ class LiveSpectrumRenderer {
         src.connect(analyser);
         analyser.connect(ctx.destination);
         audioEl._lsrCtx     = ctx;
+        audioEl._lsrSrc     = src;
         audioEl._lsrAnalyser = analyser;
       } catch (e) {
         console.warn('[LiveSpectrum] Web Audio setup failed:', e.message);

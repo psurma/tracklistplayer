@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.19.0] - 2026-03-28
+
+### Added
+- **Sleep Timer**: countdown timer (15/30/45/60/90 min presets) that pauses playback when it expires
+- **Keyboard Shortcuts**: expanded shortcuts (J/L seek, Shift+arrows volume, M mute, F star, B bookmark, Q queue, 1-9 jump to track, ? help overlay)
+- **Tracklist Export**: copy tracklist as text or download as M3U file
+- **Play Queue / Up Next**: queue tracks from any mix, plays before auto-advancing; queue panel with reorder/remove
+- **3-Band EQ**: low shelf (200Hz), peaking mid (1kHz), high shelf (8kHz) via Web Audio BiquadFilterNodes; persisted settings
+- **Timestamped Bookmarks**: mark moments in a mix with B key, rendered as red markers on waveform; bookmarks panel to manage
+- **Playback Progress Per Mix**: remembers position for each mix, shows progress bars on disc headers, offers resume prompt
+- **Last.fm Scrobbling**: full auth flow, scrobbles individual tracks from CUE-detected boundaries (30s/50% rule), now-playing updates
+- **Save to Spotify Playlist**: per-track save button, searches Spotify for matching track, pick target playlist
+- **Discord Rich Presence**: shows current track/artist/mix in Discord status (Electron only, requires discord-rpc)
+- Audio decode endpoint (`GET /api/decode`) for future BPM detection
+- Added `playlist-modify-public` and `playlist-modify-private` to Spotify OAuth scopes
+
+## [1.18.2] - 2026-03-24
+
+### Added
+- On macOS, when playback starts, automatically switches audio input away from AirPods Max back to the preferred input device (Elgato Wave:3). Requires `SwitchAudioSource` installed via `brew install switchaudio-osx`; silently skips if not present.
+
 ## [1.18.1] - 2026-03-23
 
 ### Fixed

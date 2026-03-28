@@ -3,6 +3,7 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 
 // ── Window state persistence ──────────────────────────────────────────────────
 const stateFile = path.join(app.getPath('userData'), 'window-state.json');
@@ -156,6 +157,62 @@ ipcMain.handle('pick-directory', async () => {
     title: 'Select music folder',
   });
   return result.canceled ? null : result.filePaths[0];
+});
+
+// Ensure preferred audio input is active when playback starts (macOS only).
+// Bluetooth headphones (AirPods etc.) grab the input and force a low-quality codec.
+const PREFERRED_AUDIO_INPUT = 'Elgato Wave:3';
+const AUDIO_CHECK_COOLDOWN_MS = 5000;
+let lastAudioCheck = 0;
+
+const SWITCH_ENV = {
+  ...process.env,
+  PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(':'),
+};
+
+ipcMain.handle('fix-audio-input', () => {
+  if (process.platform !== 'darwin') return;
+  const now = Date.now();
+  if (now - lastAudioCheck < AUDIO_CHECK_COOLDOWN_MS) return;
+  lastAudioCheck = now;
+
+  execFile('SwitchAudioSource', ['-c', '-t', 'input'], { env: SWITCH_ENV }, (err, stdout) => {
+    if (err) return;
+    const current = stdout.trim();
+    if (current !== PREFERRED_AUDIO_INPUT) {
+      execFile('SwitchAudioSource', ['-t', 'input', '-s', PREFERRED_AUDIO_INPUT], { env: SWITCH_ENV }, () => {});
+    }
+  });
+});
+
+// ── Discord Rich Presence ────────────────────────────────────────────────────
+let discordRPC = null;
+
+function initDiscordRPC() {
+  try {
+    const DiscordRPC = require('discord-rpc');
+    const clientId = '1355601025153273916';
+    discordRPC = new DiscordRPC.Client({ transport: 'ipc' });
+    discordRPC.login({ clientId }).catch(() => { discordRPC = null; });
+  } catch (_) {
+    discordRPC = null;
+  }
+}
+
+// Initialize after app is ready
+app.whenReady().then(() => { initDiscordRPC(); });
+
+ipcMain.handle('update-discord-presence', (_event, data) => {
+  if (!discordRPC) return;
+  try {
+    discordRPC.setActivity({
+      details: data.track || 'No track',
+      state: data.artist || '',
+      largeImageKey: 'app-icon',
+      largeImageText: data.mix || 'Tracklist Player',
+      startTimestamp: data.playing ? Math.floor(Date.now() / 1000 - (data.elapsed || 0)) : undefined,
+    });
+  } catch (_) {}
 });
 
 // Mini player: shrink window to 80 px tall, always-on-top; restore on exit
