@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1] - 2026-04-01
+
+### Fixed
+- **Toolbar layout**: toolbar buttons no longer overlap album title text; moved from absolute positioning to a proper flex row layout
+- Reduced toolbar button size (36px -> 30px) for a cleaner, more compact look
+- Toolbar wraps gracefully on smaller windows instead of overflowing
+
 ## [1.19.0] - 2026-03-28
 
 ### Added

@@ -420,21 +420,24 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 
 /* ── Toolbar ────────────────────────────────── */
+#toolbar-row {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 8px 12px; gap: 8px; flex-shrink: 0; z-index: 10;
+}
 #toolbar-left {
-  position: absolute; top: 12px; left: 16px;
-  display: flex; gap: 8px; z-index: 10;
+  display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0;
 }
 #toolbar {
-  position: absolute; top: 12px; right: 16px;
-  display: flex; gap: 8px; z-index: 10;
+  display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;
+  min-width: 0;
 }
 /* All toolbar buttons share the same icon-button style */
 #toolbar > button, #toolbar > a,
 #toolbar-left > button, #toolbar-left > a {
   background: var(--bg3); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text-dim);
-  cursor: pointer; font-family: inherit; font-size: 16px;
-  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-family: inherit; font-size: 14px;
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
   text-decoration: none; transition: background 0.15s, color 0.15s, border-color 0.15s;
   flex-shrink: 0;
 }
@@ -443,14 +446,14 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 #waveform-toggle.off { color: var(--text-muted); }
 #search-btn.active { color: var(--accent); border-color: var(--accent); }
 /* Spotify panel toggle — green circle */
-#toolbar-left > #spotify-btn { background: #1db954; border-color: #1db954; color: #000; width: 38px; height: 38px; border-radius: 50%; }
+#toolbar-left > #spotify-btn { background: #1db954; border-color: #1db954; color: #000; width: 30px; height: 30px; border-radius: 50%; }
 #toolbar-left > #spotify-btn:hover { background: #1ed760; border-color: #1ed760; }
 #spotify-btn.active { color: #000 !important; background: #1ed760 !important; border-color: #1ed760 !important; }
 /* Spotify search (track-contextual) — smaller, same green */
-#toolbar > #spotify-search-btn { background: #1db954; border-color: #1db954; color: #000; width: 30px; height: 30px; border-radius: 50%; }
+#toolbar > #spotify-search-btn { background: #1db954; border-color: #1db954; color: #000; width: 26px; height: 26px; border-radius: 50%; }
 #toolbar > #spotify-search-btn:hover { background: #1ed760; border-color: #1ed760; }
 /* SoundCloud — orange brand */
-#toolbar > #soundcloud-btn { background: #ff5500; border-color: #ff5500; color: #fff; width: 38px; height: 38px; border-radius: 8px; }
+#toolbar > #soundcloud-btn { background: #ff5500; border-color: #ff5500; color: #fff; width: 30px; height: 30px; border-radius: 8px; }
 #toolbar > #soundcloud-btn:hover { background: #ff7733; border-color: #ff7733; }
 
 /* ── Mini player ────────────────────────────── */
@@ -763,7 +766,7 @@ body.mini #seek-bar         { height: 6px; }
 #now-playing {
   flex-shrink: 0;
   text-align: center;
-  padding: 20px 20px 16px;
+  padding: 16px 20px 16px;
   border-bottom: 1px solid var(--border);
   position: relative;
   overflow: hidden;
@@ -1018,7 +1021,7 @@ body.darwin #dir-bar { padding-left: 76px; }
 #main a,
 #main input,
 #nfo-pane,
-#toolbar-left { -webkit-app-region: no-drag; }
+#toolbar-row { -webkit-app-region: no-drag; }
 /* Allow text selection on specific now-playing fields without blocking full-area drag */
 #np-disc, #np-title, #np-performer { -webkit-app-region: no-drag; }
 
