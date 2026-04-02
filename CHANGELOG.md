@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.19.2] - 2026-04-02
+
+### Fixed
+- **Favourites resilience**: favourites now saved to disk (`~/.tracklistplayer/favorites.json`) in addition to localStorage
+- On load, merges localStorage + localStorage backup + server file — the union of all sources, so entries are never lost
+- Server keeps up to 20 timestamped backup files in `~/.tracklistplayer/favorites_backups/`
+- Empty-save guard on both client and server: refuses to overwrite non-empty data with an empty array
+- localStorage backup copy (`tlp_favorites_backup`) kept as additional safety net
+
 ## [1.19.1] - 2026-04-01
 
 ### Fixed

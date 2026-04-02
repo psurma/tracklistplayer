@@ -312,18 +312,78 @@ function applyTheme(theme) {
 
 // ── Favorites ─────────────────────────────────────────────────────────────────
 // state.favorites: Map<key, {mp3Path, mp3File, dir, trackNumber, title, performer, albumTitle, startSeconds}>
-function loadFavorites() {
-  state.favorites = new Map();
-  const saved = STORAGE.getFavs();
-  for (const item of saved) {
+//
+// Resilience strategy:
+//   1. Load merges localStorage + server file (superset — never loses entries)
+//   2. Save writes to localStorage immediately, then to server (disk-backed with rotating backups)
+//   3. A localStorage backup copy (tlp_favorites_backup) is kept as a second safety net
+//   4. Empty-save guard: refuses to overwrite non-empty data with an empty array
+
+function _favsFromArray(arr) {
+  const map = new Map();
+  for (const item of arr) {
     if (typeof item === 'object' && item.mp3File && item.trackNumber != null) {
-      state.favorites.set(favKey(item.mp3File, item.trackNumber), item);
+      map.set(favKey(item.mp3File, item.trackNumber), item);
     }
   }
+  return map;
+}
+
+function _mergeFavSources(...arrays) {
+  const merged = new Map();
+  for (const arr of arrays) {
+    for (const item of arr) {
+      if (typeof item === 'object' && item.mp3File && item.trackNumber != null) {
+        merged.set(favKey(item.mp3File, item.trackNumber), item);
+      }
+    }
+  }
+  return merged;
+}
+
+async function loadFavorites() {
+  const localMain = STORAGE.getFavs();
+  const localBackup = JSON.parse(localStorage.getItem('tlp_favorites_backup') || '[]');
+
+  let serverFavs = [];
+  try {
+    const res = await fetch('/api/favorites');
+    if (res.ok) serverFavs = await res.json();
+  } catch (_) {}
+
+  // Merge all sources — the union ensures nothing is lost
+  state.favorites = _mergeFavSources(localMain, localBackup, serverFavs);
+
+  // If merge recovered entries that localStorage was missing, persist the full set back
+  const mergedArr = [...state.favorites.values()];
+  if (mergedArr.length > localMain.length) {
+    console.info(`loadFavorites: recovered ${mergedArr.length - localMain.length} entries from backup/server`);
+    STORAGE.setFavs(mergedArr);
+  }
+
+  console.info(`loadFavorites: ${mergedArr.length} total (local=${localMain.length}, backup=${localBackup.length}, server=${serverFavs.length})`);
 }
 
 function saveFavorites() {
-  STORAGE.setFavs([...state.favorites.values()]);
+  const current = [...state.favorites.values()];
+  const prev = STORAGE.getFavs();
+
+  // Guard: never overwrite non-empty data with nothing
+  if (prev.length > 0 && current.length === 0) {
+    console.warn('saveFavorites: refusing to wipe all favourites; existing count =', prev.length);
+    return;
+  }
+
+  // Write to localStorage (primary + backup)
+  STORAGE.setFavs(current);
+  localStorage.setItem('tlp_favorites_backup', JSON.stringify(current));
+
+  // Write to server (disk-backed with rotating backups)
+  fetch('/api/favorites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(current),
+  }).catch(err => console.warn('saveFavorites: server sync failed', err));
 }
 
 function toggleFavorite(disc, trackIdx, starEl) {
@@ -2687,6 +2747,8 @@ volumeBar.addEventListener('input', () => { audio.volume = volumeBar.value; });
 let _savedVolume = 1;
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select, [contenteditable]')) return;
+  // Never intercept Cmd/Ctrl combos (Cmd+Q quit, Cmd+W close, Cmd+C copy, etc.)
+  if (e.metaKey || e.ctrlKey) return;
   const shortcutsOverlay = document.getElementById('shortcuts-overlay');
   switch (e.key) {
     case ' ':
@@ -3851,7 +3913,7 @@ function triggerStarFirework() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
-  loadFavorites();
+  await loadFavorites();
   applyTheme(STORAGE.getTheme());
   setWaveformVisible(STORAGE.getWaveformOn());
   setTrackLabelsVisible(STORAGE.getTrackLabels());

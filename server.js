@@ -1818,4 +1818,50 @@ app.get('/api/decode', async (req, res) => {
   }
 });
 
+// ── Favorites persistence (disk-backed) ─────────────────────────────────────
+const FAVS_FILE = path.join(TLP_DIR, 'favorites.json');
+const FAVS_BACKUP_DIR = path.join(TLP_DIR, 'favorites_backups');
+const MAX_BACKUPS = 20;
+
+function readFavsFile() {
+  try { return JSON.parse(fs.readFileSync(FAVS_FILE, 'utf8')); }
+  catch (_) { return []; }
+}
+
+function writeFavsFile(arr) {
+  try { fs.mkdirSync(TLP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
+  // Rotate backup before overwriting
+  try {
+    const existing = fs.readFileSync(FAVS_FILE, 'utf8');
+    const parsed = JSON.parse(existing);
+    if (parsed.length > 0) {
+      try { fs.mkdirSync(FAVS_BACKUP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.writeFileSync(path.join(FAVS_BACKUP_DIR, `favorites-${stamp}.json`), existing, { mode: 0o600 });
+      // Prune old backups
+      const files = fs.readdirSync(FAVS_BACKUP_DIR).filter(f => f.startsWith('favorites-')).sort();
+      while (files.length > MAX_BACKUPS) {
+        fs.unlinkSync(path.join(FAVS_BACKUP_DIR, files.shift()));
+      }
+    }
+  } catch (_) {}
+  fs.writeFileSync(FAVS_FILE, JSON.stringify(arr, null, 2), { mode: 0o600 });
+}
+
+app.get('/api/favorites', (_req, res) => {
+  res.json(readFavsFile());
+});
+
+app.post('/api/favorites', (req, res) => {
+  const arr = req.body;
+  if (!Array.isArray(arr)) return res.status(400).json({ error: 'expected array' });
+  const existing = readFavsFile();
+  // Safety: refuse to wipe a non-empty file with an empty save
+  if (existing.length > 0 && arr.length === 0) {
+    return res.status(409).json({ error: 'refusing to delete all favorites', existing: existing.length });
+  }
+  writeFavsFile(arr);
+  res.json({ ok: true, count: arr.length });
+});
+
 module.exports = server;
