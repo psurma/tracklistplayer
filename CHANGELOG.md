@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.21.0] - 2026-04-13
+
+### Changed
+- **Server modularization**: split server.js (1,867 lines) into 9 Express Router modules in `routes/` plus shared helpers in `lib/helpers.js` and `lib/oauth.js`. server.js is now 64 lines of setup and route registration.
+- **Frontend modularization**: split app.js (4,717 lines) into 26 ES modules in `src/` bundled with esbuild. Modules organized by feature domain (playback, spotify, soundcloud, lastfm, search, favorites, bookmarks, queue, layout, settings, etc.).
+- **Build system**: added esbuild for frontend bundling (`npm run build:js`, `npm run watch:js`). Bundle output: public/app.bundle.js (190kb).
+
+### Server route modules
+- `routes/library.js` -- library CRUD + index
+- `routes/spotify.js` -- Spotify OAuth + API proxy
+- `routes/soundcloud.js` -- SoundCloud OAuth + streaming
+- `routes/lastfm.js` -- Last.fm auth + scrobbling
+- `routes/files.js` -- scan, ls, nfo, file streaming
+- `routes/waveform.js` -- waveform analysis, transition detection
+- `routes/music-index.js` -- recursive indexing + artwork
+- `routes/tracklist.js` -- MixesDB scraping
+- `routes/favorites.js` -- favorites persistence + audio decode
+
 ## [1.20.0] - 2026-04-13
 
 ### Security

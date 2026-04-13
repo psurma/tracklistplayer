@@ -1,12 +1,14 @@
 {
   "name": "tracklistplayer",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "description": "DJ mix MP3 player with CUE sheet track detection and Spotify search",
   "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
     "electron": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "build:js": "esbuild src/app.js --bundle --outfile=public/app.bundle.js --format=iife",
+    "watch:js": "esbuild src/app.js --bundle --outfile=public/app.bundle.js --format=iife --watch"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
@@ -16,7 +18,8 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "electron": "^40.8.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.0"
   },
   "build": {
     "appId": "com.pete.tracklistplayer",
