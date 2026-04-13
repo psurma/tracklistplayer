@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.22.0] - 2026-04-13
+
+### Changed
+- **OAuth deduplication**: extracted shared config I/O (`createConfigStore`) and auth guard (`requireAuth`) into `lib/oauth-helpers.js`, reducing boilerplate across Spotify, SoundCloud, and Last.fm route modules
+- **Discord RPC**: replaced deprecated `discord-rpc` with maintained `@xhayper/discord-rpc`
+- **DOM optimization**: renderDiscList uses DocumentFragment for batch DOM insertion; cached repeated getElementById calls in playback.js, nfo-pane.js, lastfm.js
+
+### Added
+- **Unit tests**: 45 tests across 9 suites covering `resolveAndValidate`, `serverEscapeHtml`, `BoundedMap`, `ensureFreshToken`, `cueTimeToSeconds`, `parseCueFile`, and OAuth state management. Run with `npm test`.
+
 ## [1.21.0] - 2026-04-13
 
 ### Changed

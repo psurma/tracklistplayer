@@ -1105,53 +1105,56 @@
       }
     }
   }
+  var lastfmApiKeyInput = document.getElementById("lastfm-api-key-input");
+  var lastfmSecretInput = document.getElementById("lastfm-shared-secret-input");
+  var lastfmStatusEl = document.getElementById("lastfm-settings-status");
+  var lastfmDisconnectRow = document.getElementById("lastfm-disconnect-row");
   async function initLastfmSettings() {
     try {
       const res = await fetch("/api/lastfm/config");
       if (!res.ok) return;
       const cfg = await res.json();
-      if (cfg.api_key) document.getElementById("lastfm-api-key-input").value = cfg.api_key;
+      if (cfg.api_key) lastfmApiKeyInput.value = cfg.api_key;
       if (cfg.connected) {
-        document.getElementById("lastfm-settings-status").textContent = `Connected as ${cfg.username}`;
-        document.getElementById("lastfm-disconnect-row").classList.remove("hidden");
+        lastfmStatusEl.textContent = `Connected as ${cfg.username}`;
+        lastfmDisconnectRow.classList.remove("hidden");
       }
     } catch (_) {
     }
   }
   document.getElementById("lastfm-save-creds-btn")?.addEventListener("click", async () => {
-    const apiKey = document.getElementById("lastfm-api-key-input").value.trim();
-    const sharedSecret = document.getElementById("lastfm-shared-secret-input").value.trim();
+    const apiKey = lastfmApiKeyInput.value.trim();
+    const sharedSecret = lastfmSecretInput.value.trim();
     if (!apiKey || !sharedSecret) return;
-    const statusEl = document.getElementById("lastfm-settings-status");
     const res = await fetch("/api/lastfm/credentials", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ apiKey, sharedSecret })
     });
-    statusEl.textContent = res.ok ? "Credentials saved" : "Failed to save";
+    lastfmStatusEl.textContent = res.ok ? "Credentials saved" : "Failed to save";
   });
   document.getElementById("lastfm-connect-btn")?.addEventListener("click", async () => {
     const res = await fetch("/api/lastfm/auth-url");
     if (!res.ok) return;
     const { url } = await res.json();
     window.open(url, "_blank");
-    document.getElementById("lastfm-settings-status").textContent = "Authorize in browser, then return here...";
+    lastfmStatusEl.textContent = "Authorize in browser, then return here...";
     const poll = setInterval(async () => {
       const r = await fetch("/api/lastfm/config");
       if (!r.ok) return;
       const cfg = await r.json();
       if (cfg.connected) {
         clearInterval(poll);
-        document.getElementById("lastfm-settings-status").textContent = `Connected as ${cfg.username}`;
-        document.getElementById("lastfm-disconnect-row").classList.remove("hidden");
+        lastfmStatusEl.textContent = `Connected as ${cfg.username}`;
+        lastfmDisconnectRow.classList.remove("hidden");
       }
     }, 3e3);
     setTimeout(() => clearInterval(poll), 12e4);
   });
   document.getElementById("lastfm-disconnect-btn")?.addEventListener("click", async () => {
     await fetch("/api/lastfm/disconnect", { method: "POST" });
-    document.getElementById("lastfm-settings-status").textContent = "Disconnected";
-    document.getElementById("lastfm-disconnect-row").classList.add("hidden");
+    lastfmStatusEl.textContent = "Disconnected";
+    lastfmDisconnectRow.classList.add("hidden");
   });
 
   // src/discord.js
@@ -1449,12 +1452,13 @@ ${"\u2500".repeat(disc.albumTitle.length)}
     nfoPane.classList.toggle("hidden", !visible);
     artworkPane.classList.toggle("hidden", visible || !currentArtworkUrl);
   }
+  var nfoTabs = document.getElementById("nfo-tabs");
   function enterStreamingInfoMode() {
-    document.getElementById("nfo-tabs").classList.add("hidden");
-    document.getElementById("nfo-tab-nfo").classList.add("hidden");
-    document.getElementById("nfo-tab-tracklist") && document.getElementById("nfo-tab-tracklist").classList.add("hidden");
-    document.getElementById("nfo-tab-detect").classList.add("hidden");
-    document.getElementById("nfo-detect-btn").classList.add("hidden");
+    nfoTabs.classList.add("hidden");
+    nfoTabNfo.classList.add("hidden");
+    if (nfoTabTracklist) nfoTabTracklist.classList.add("hidden");
+    nfoTabDetect.classList.add("hidden");
+    nfoDetectBtn.classList.add("hidden");
     streamInfoPanel.classList.remove("hidden");
     nfoPane.classList.remove("hidden");
     artworkPane.classList.add("hidden");
@@ -1463,8 +1467,8 @@ ${"\u2500".repeat(disc.albumTitle.length)}
   function exitStreamingInfoMode() {
     streamInfoPanel.classList.add("hidden");
     streamInfoContent.innerHTML = "";
-    document.getElementById("nfo-tabs").classList.remove("hidden");
-    document.getElementById("nfo-tab-nfo").classList.remove("hidden");
+    nfoTabs.classList.remove("hidden");
+    nfoTabNfo.classList.remove("hidden");
     nfoPane.classList.add("hidden");
     artworkPane.classList.toggle("hidden", !currentArtworkUrl);
     localBtn.classList.add("hidden");
@@ -2383,6 +2387,7 @@ ${"\u2500".repeat(disc.albumTitle.length)}
       discList.innerHTML = '<div class="status-msg">No MP3/CUE files here.</div>';
       return;
     }
+    const frag = document.createDocumentFragment();
     for (const disc of state.discs) {
       const section = document.createElement("div");
       section.className = "disc-section";
@@ -2418,7 +2423,7 @@ ${"\u2500".repeat(disc.albumTitle.length)}
         warn.className = "disc-no-mp3";
         warn.textContent = "No MP3 found for this CUE.";
         section.appendChild(warn);
-        discList.appendChild(section);
+        frag.appendChild(section);
         continue;
       }
       if (!disc.tracks.length) {
@@ -2470,7 +2475,7 @@ ${"\u2500".repeat(disc.albumTitle.length)}
           if (favsPanel2 && !favsPanel2.classList.contains("hidden")) renderFavsList();
         });
         section.appendChild(item);
-        discList.appendChild(section);
+        frag.appendChild(section);
         continue;
       }
       for (let i = 0; i < disc.tracks.length; i++) {
@@ -2513,8 +2518,9 @@ ${"\u2500".repeat(disc.albumTitle.length)}
         });
         section.appendChild(item);
       }
-      discList.appendChild(section);
+      frag.appendChild(section);
     }
+    discList.appendChild(frag);
     applyFilter(filterInput.value);
   }
   function highlightTrackInSidebar(discId, trackIdx) {
@@ -2739,12 +2745,16 @@ ${"\u2500".repeat(disc.albumTitle.length)}
   function getLiveSpectrumWrap() {
     return liveSpectrumWrap;
   }
+  var wfOverviewWrap = document.getElementById("wf-overview-wrap");
+  var wfResizeMid = document.getElementById("wf-resize-mid");
+  var wfZoomWrap = document.getElementById("wf-zoom-wrap");
+  var wfResizeBot = document.getElementById("wf-resize-bot");
   function showLiveSpectrum() {
     wfSection.classList.remove("hidden");
-    document.getElementById("wf-overview-wrap").classList.add("hidden");
-    document.getElementById("wf-resize-mid").classList.add("hidden");
-    document.getElementById("wf-zoom-wrap").classList.add("hidden");
-    document.getElementById("wf-resize-bot").classList.add("hidden");
+    wfOverviewWrap.classList.add("hidden");
+    wfResizeMid.classList.add("hidden");
+    wfZoomWrap.classList.add("hidden");
+    wfResizeBot.classList.add("hidden");
     liveSpectrumWrap.classList.remove("hidden");
     liveSpectrum.connectAudioElement(audio);
     if (audio._lsrCtx && audio._lsrSrc && !getEqLowFilter()) {
@@ -2755,10 +2765,10 @@ ${"\u2500".repeat(disc.albumTitle.length)}
   function hideLiveSpectrum() {
     liveSpectrum.stop();
     liveSpectrumWrap.classList.add("hidden");
-    document.getElementById("wf-overview-wrap").classList.remove("hidden");
-    document.getElementById("wf-resize-mid").classList.remove("hidden");
-    document.getElementById("wf-zoom-wrap").classList.remove("hidden");
-    document.getElementById("wf-resize-bot").classList.remove("hidden");
+    wfOverviewWrap.classList.remove("hidden");
+    wfResizeMid.classList.remove("hidden");
+    wfZoomWrap.classList.remove("hidden");
+    wfResizeBot.classList.remove("hidden");
   }
   var currentArtworkPath = null;
   var currentArtworkUrl2 = null;

@@ -90,12 +90,17 @@ export function initLiveSpectrum() {
 export function getLiveSpectrum() { return liveSpectrum; }
 export function getLiveSpectrumWrap() { return liveSpectrumWrap; }
 
+const wfOverviewWrap = document.getElementById('wf-overview-wrap');
+const wfResizeMid   = document.getElementById('wf-resize-mid');
+const wfZoomWrap    = document.getElementById('wf-zoom-wrap');
+const wfResizeBot   = document.getElementById('wf-resize-bot');
+
 export function showLiveSpectrum() {
   wfSection.classList.remove('hidden');
-  document.getElementById('wf-overview-wrap').classList.add('hidden');
-  document.getElementById('wf-resize-mid').classList.add('hidden');
-  document.getElementById('wf-zoom-wrap').classList.add('hidden');
-  document.getElementById('wf-resize-bot').classList.add('hidden');
+  wfOverviewWrap.classList.add('hidden');
+  wfResizeMid.classList.add('hidden');
+  wfZoomWrap.classList.add('hidden');
+  wfResizeBot.classList.add('hidden');
   liveSpectrumWrap.classList.remove('hidden');
   liveSpectrum.connectAudioElement(audio);
   if (audio._lsrCtx && audio._lsrSrc && !getEqLowFilter()) {
@@ -107,10 +112,10 @@ export function showLiveSpectrum() {
 export function hideLiveSpectrum() {
   liveSpectrum.stop();
   liveSpectrumWrap.classList.add('hidden');
-  document.getElementById('wf-overview-wrap').classList.remove('hidden');
-  document.getElementById('wf-resize-mid').classList.remove('hidden');
-  document.getElementById('wf-zoom-wrap').classList.remove('hidden');
-  document.getElementById('wf-resize-bot').classList.remove('hidden');
+  wfOverviewWrap.classList.remove('hidden');
+  wfResizeMid.classList.remove('hidden');
+  wfZoomWrap.classList.remove('hidden');
+  wfResizeBot.classList.remove('hidden');
 }
 
 // ── Artwork ──────────────────────────────────────────────────────────────────

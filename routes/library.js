@@ -4,9 +4,7 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
-
-const TLP_DIR = path.join(os.homedir(), '.tracklistplayer');
+const { TLP_DIR } = require('../lib/oauth-helpers');
 const LIBRARY_FILE = path.join(TLP_DIR, 'library.json');
 
 let _libraryCache = null;

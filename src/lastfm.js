@@ -56,31 +56,35 @@ function checkScrobble(disc, trackIdx) {
   }
 }
 
+const lastfmApiKeyInput   = document.getElementById('lastfm-api-key-input');
+const lastfmSecretInput   = document.getElementById('lastfm-shared-secret-input');
+const lastfmStatusEl      = document.getElementById('lastfm-settings-status');
+const lastfmDisconnectRow = document.getElementById('lastfm-disconnect-row');
+
 async function initLastfmSettings() {
   try {
     const res = await fetch('/api/lastfm/config');
     if (!res.ok) return;
     const cfg = await res.json();
-    if (cfg.api_key) document.getElementById('lastfm-api-key-input').value = cfg.api_key;
+    if (cfg.api_key) lastfmApiKeyInput.value = cfg.api_key;
     if (cfg.connected) {
-      document.getElementById('lastfm-settings-status').textContent = `Connected as ${cfg.username}`;
-      document.getElementById('lastfm-disconnect-row').classList.remove('hidden');
+      lastfmStatusEl.textContent = `Connected as ${cfg.username}`;
+      lastfmDisconnectRow.classList.remove('hidden');
     }
   } catch (_) {}
 }
 
 // Last.fm settings event handlers
 document.getElementById('lastfm-save-creds-btn')?.addEventListener('click', async () => {
-  const apiKey = document.getElementById('lastfm-api-key-input').value.trim();
-  const sharedSecret = document.getElementById('lastfm-shared-secret-input').value.trim();
+  const apiKey = lastfmApiKeyInput.value.trim();
+  const sharedSecret = lastfmSecretInput.value.trim();
   if (!apiKey || !sharedSecret) return;
-  const statusEl = document.getElementById('lastfm-settings-status');
   const res = await fetch('/api/lastfm/credentials', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ apiKey, sharedSecret }),
   });
-  statusEl.textContent = res.ok ? 'Credentials saved' : 'Failed to save';
+  lastfmStatusEl.textContent = res.ok ? 'Credentials saved' : 'Failed to save';
 });
 
 document.getElementById('lastfm-connect-btn')?.addEventListener('click', async () => {
@@ -88,15 +92,15 @@ document.getElementById('lastfm-connect-btn')?.addEventListener('click', async (
   if (!res.ok) return;
   const { url } = await res.json();
   window.open(url, '_blank');
-  document.getElementById('lastfm-settings-status').textContent = 'Authorize in browser, then return here...';
+  lastfmStatusEl.textContent = 'Authorize in browser, then return here...';
   const poll = setInterval(async () => {
     const r = await fetch('/api/lastfm/config');
     if (!r.ok) return;
     const cfg = await r.json();
     if (cfg.connected) {
       clearInterval(poll);
-      document.getElementById('lastfm-settings-status').textContent = `Connected as ${cfg.username}`;
-      document.getElementById('lastfm-disconnect-row').classList.remove('hidden');
+      lastfmStatusEl.textContent = `Connected as ${cfg.username}`;
+      lastfmDisconnectRow.classList.remove('hidden');
     }
   }, 3000);
   setTimeout(() => clearInterval(poll), 120000);
@@ -104,8 +108,8 @@ document.getElementById('lastfm-connect-btn')?.addEventListener('click', async (
 
 document.getElementById('lastfm-disconnect-btn')?.addEventListener('click', async () => {
   await fetch('/api/lastfm/disconnect', { method: 'POST' });
-  document.getElementById('lastfm-settings-status').textContent = 'Disconnected';
-  document.getElementById('lastfm-disconnect-row').classList.add('hidden');
+  lastfmStatusEl.textContent = 'Disconnected';
+  lastfmDisconnectRow.classList.add('hidden');
 });
 
 export { lastfmUpdateNowPlaying, lastfmScrobble, checkScrobble, initLastfmSettings };

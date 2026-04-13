@@ -4,28 +4,12 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const { serverEscapeHtml } = require('../lib/helpers');
 const { getPendingLastfmAuth, setPendingLastfmAuth } = require('../lib/oauth');
+const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
 
-const LASTFM_CONFIG_PATH = path.join(os.homedir(), '.tracklistplayer', 'lastfm.json');
+const lastfmConfig = createConfigStore(path.join(TLP_DIR, 'lastfm.json'));
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
-
-async function readLastfmConfig() {
-  try {
-    const data = await fs.promises.readFile(LASTFM_CONFIG_PATH, 'utf8');
-    return JSON.parse(data);
-  } catch (_) {
-    return {};
-  }
-}
-
-async function writeLastfmConfig(data) {
-  const dir = path.dirname(LASTFM_CONFIG_PATH);
-  await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(LASTFM_CONFIG_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
-}
 
 // Build Last.fm api_sig: md5 of sorted params (excluding format) concatenated + shared secret
 function lastfmApiSig(params, sharedSecret) {
@@ -40,7 +24,7 @@ function lastfmApiSig(params, sharedSecret) {
 
 // GET /api/lastfm/config — return { api_key (masked), connected, username }
 router.get('/api/lastfm/config', async (_req, res) => {
-  const config = await readLastfmConfig();
+  const config = await lastfmConfig.read();
   const apiKey = config.api_key || '';
   res.json({
     api_key: apiKey ? apiKey.slice(0, 4) + '...' + apiKey.slice(-4) : '',
@@ -53,14 +37,14 @@ router.get('/api/lastfm/config', async (_req, res) => {
 router.post('/api/lastfm/credentials', async (req, res) => {
   const { apiKey, sharedSecret } = req.body || {};
   if (!apiKey || !sharedSecret) return res.status(400).json({ error: 'apiKey and sharedSecret required' });
-  const existing = await readLastfmConfig();
-  await writeLastfmConfig({ ...existing, api_key: apiKey, shared_secret: sharedSecret });
+  const existing = await lastfmConfig.read();
+  await lastfmConfig.write({ ...existing, api_key: apiKey, shared_secret: sharedSecret });
   res.json({ ok: true });
 });
 
 // GET /api/lastfm/auth-url — generate Last.fm auth URL
 router.get('/api/lastfm/auth-url', async (_req, res) => {
-  const config = await readLastfmConfig();
+  const config = await lastfmConfig.read();
   if (!config.api_key) return res.status(400).json({ error: 'No api_key configured' });
   setPendingLastfmAuth(Date.now() + 10 * 60 * 1000); // 10 min TTL
   const url = `http://www.last.fm/api/auth/?api_key=${encodeURIComponent(config.api_key)}`
@@ -75,7 +59,7 @@ router.get('/auth/lastfm/callback', async (req, res) => {
   const pendingLastfmAuth = getPendingLastfmAuth();
   if (!pendingLastfmAuth || Date.now() > pendingLastfmAuth) return res.status(400).send('No pending auth flow');
   setPendingLastfmAuth(0);
-  const config = await readLastfmConfig();
+  const config = await lastfmConfig.read();
   if (!config.api_key || !config.shared_secret) return res.status(400).send('Last.fm credentials not configured');
   try {
     const params = {
@@ -96,7 +80,7 @@ router.get('/auth/lastfm/callback', async (req, res) => {
       return res.send(`<!DOCTYPE html><html><head><title>Last.fm Auth</title></head><body style="font-family:sans-serif;background:#1a1a2e;color:#fff;padding:40px"><h2 style="color:#e05050">Error</h2><p>${serverEscapeHtml(lfmData.message || 'Unknown error')}</p></body></html>`);
     }
     const session = lfmData.session || {};
-    await writeLastfmConfig({
+    await lastfmConfig.write({
       ...config,
       session_key: session.key,
       username: session.name || '',
@@ -108,11 +92,10 @@ router.get('/auth/lastfm/callback', async (req, res) => {
 });
 
 // POST /api/lastfm/scrobble — { artist, track, timestamp, album }
-router.post('/api/lastfm/scrobble', async (req, res) => {
+router.post('/api/lastfm/scrobble', requireAuth(lastfmConfig, 'session_key'), async (req, res) => {
   const { artist, track, timestamp, album } = req.body || {};
   if (!artist || !track) return res.status(400).json({ error: 'artist and track required' });
-  const config = await readLastfmConfig();
-  if (!config.session_key) return res.status(401).json({ error: 'Not connected to Last.fm' });
+  const config = req.serviceConfig;
   try {
     const params = {
       method: 'track.scrobble',
@@ -141,11 +124,10 @@ router.post('/api/lastfm/scrobble', async (req, res) => {
 });
 
 // POST /api/lastfm/now-playing — { artist, track, album }
-router.post('/api/lastfm/now-playing', async (req, res) => {
+router.post('/api/lastfm/now-playing', requireAuth(lastfmConfig, 'session_key'), async (req, res) => {
   const { artist, track, album } = req.body || {};
   if (!artist || !track) return res.status(400).json({ error: 'artist and track required' });
-  const config = await readLastfmConfig();
-  if (!config.session_key) return res.status(401).json({ error: 'Not connected to Last.fm' });
+  const config = req.serviceConfig;
   try {
     const params = {
       method: 'track.updateNowPlaying',
@@ -174,8 +156,8 @@ router.post('/api/lastfm/now-playing', async (req, res) => {
 
 // POST /api/lastfm/disconnect — clear session_key
 router.post('/api/lastfm/disconnect', async (_req, res) => {
-  const config = await readLastfmConfig();
-  await writeLastfmConfig({ api_key: config.api_key || '', shared_secret: config.shared_secret || '' });
+  const config = await lastfmConfig.read();
+  await lastfmConfig.write({ api_key: config.api_key || '', shared_secret: config.shared_secret || '' });
   res.json({ ok: true });
 });
 

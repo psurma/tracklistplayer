@@ -61,12 +61,14 @@ function setNfoPaneVisible(visible) {
   artworkPane.classList.toggle('hidden', visible || !currentArtworkUrl);
 }
 
+const nfoTabs = document.getElementById('nfo-tabs');
+
 function enterStreamingInfoMode() {
-  document.getElementById('nfo-tabs').classList.add('hidden');
-  document.getElementById('nfo-tab-nfo').classList.add('hidden');
-  document.getElementById('nfo-tab-tracklist') && document.getElementById('nfo-tab-tracklist').classList.add('hidden');
-  document.getElementById('nfo-tab-detect').classList.add('hidden');
-  document.getElementById('nfo-detect-btn').classList.add('hidden');
+  nfoTabs.classList.add('hidden');
+  nfoTabNfo.classList.add('hidden');
+  if (nfoTabTracklist) nfoTabTracklist.classList.add('hidden');
+  nfoTabDetect.classList.add('hidden');
+  nfoDetectBtn.classList.add('hidden');
   streamInfoPanel.classList.remove('hidden');
   nfoPane.classList.remove('hidden');
   artworkPane.classList.add('hidden');
@@ -76,8 +78,8 @@ function enterStreamingInfoMode() {
 function exitStreamingInfoMode() {
   streamInfoPanel.classList.add('hidden');
   streamInfoContent.innerHTML = '';
-  document.getElementById('nfo-tabs').classList.remove('hidden');
-  document.getElementById('nfo-tab-nfo').classList.remove('hidden');
+  nfoTabs.classList.remove('hidden');
+  nfoTabNfo.classList.remove('hidden');
   nfoPane.classList.add('hidden');
   artworkPane.classList.toggle('hidden', !currentArtworkUrl);
   localBtn.classList.add('hidden');

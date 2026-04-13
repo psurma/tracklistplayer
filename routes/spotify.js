@@ -4,29 +4,13 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const { serverEscapeHtml, ensureFreshToken } = require('../lib/helpers');
 const { pendingSpotifyStates } = require('../lib/oauth');
+const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
 
-const SPOTIFY_CONFIG_PATH = path.join(os.homedir(), '.tracklistplayer', 'spotify.json');
+const spotifyConfig = createConfigStore(path.join(TLP_DIR, 'spotify.json'));
 const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:3123/auth/spotify/callback';
 const SPOTIFY_SCOPES = 'user-library-read streaming user-read-playback-state user-modify-playback-state user-read-email user-read-private playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private';
-
-async function readSpotifyConfig() {
-  try {
-    const data = await fs.promises.readFile(SPOTIFY_CONFIG_PATH, 'utf8');
-    return JSON.parse(data);
-  } catch (_) {
-    return {};
-  }
-}
-
-async function writeSpotifyConfig(data) {
-  const dir = path.dirname(SPOTIFY_CONFIG_PATH);
-  await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(SPOTIFY_CONFIG_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
-}
 
 async function refreshSpotifyToken(config) {
   const params = new URLSearchParams();
@@ -43,13 +27,13 @@ async function refreshSpotifyToken(config) {
   console.log('Token refresh — scopes returned by Spotify:', tokenData.scope || '(none)');
   const updated = { ...config, access_token: tokenData.access_token, expires_at: Date.now() + tokenData.expires_in * 1000 };
   if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
-  await writeSpotifyConfig(updated);
+  await spotifyConfig.write(updated);
   return updated;
 }
 
 // GET /api/spotify/config — return client_id and auth status
 router.get('/api/spotify/config', async (req, res) => {
-  const config = await readSpotifyConfig();
+  const config = await spotifyConfig.read();
   res.json({
     client_id: config.client_id || '',
     connected: !!(config.access_token && config.refresh_token),
@@ -60,14 +44,14 @@ router.get('/api/spotify/config', async (req, res) => {
 router.post('/api/spotify/credentials', async (req, res) => {
   const { client_id, client_secret } = req.body || {};
   if (!client_id || !client_secret) return res.status(400).json({ error: 'client_id and client_secret required' });
-  const existing = await readSpotifyConfig();
-  await writeSpotifyConfig({ ...existing, client_id, client_secret });
+  const existing = await spotifyConfig.read();
+  await spotifyConfig.write({ ...existing, client_id, client_secret });
   res.json({ ok: true });
 });
 
 // GET /api/spotify/auth-url — generate Spotify authorize URL
 router.get('/api/spotify/auth-url', async (req, res) => {
-  const config = await readSpotifyConfig();
+  const config = await spotifyConfig.read();
   if (!config.client_id) return res.status(400).json({ error: 'No client_id configured' });
   const state = crypto.randomBytes(16).toString('hex');
   pendingSpotifyStates.set(state, Date.now() + 10 * 60 * 1000); // 10 min TTL
@@ -89,7 +73,7 @@ router.get('/auth/spotify/callback', async (req, res) => {
   if (!stateExpiry || Date.now() > stateExpiry) return res.status(400).send('Invalid or expired state');
   pendingSpotifyStates.delete(state);
 
-  const config = await readSpotifyConfig();
+  const config = await spotifyConfig.read();
   if (!config.client_id || !config.client_secret) return res.status(400).send('Spotify credentials not configured');
 
   try {
@@ -109,7 +93,7 @@ router.get('/auth/spotify/callback', async (req, res) => {
     }
     const tokenData = await tokenRes.json();
     console.log('Spotify token granted scopes:', tokenData.scope);
-    await writeSpotifyConfig({
+    await spotifyConfig.write({
       ...config,
       access_token: tokenData.access_token,
       refresh_token: tokenData.refresh_token,
@@ -124,7 +108,7 @@ router.get('/auth/spotify/callback', async (req, res) => {
 
 // GET /api/spotify/status — return { connected, displayName }
 router.get('/api/spotify/status', async (req, res) => {
-  const config = await readSpotifyConfig();
+  const config = await spotifyConfig.read();
   if (!config.access_token || !config.refresh_token) return res.json({ connected: false });
   try {
     const meRes = await fetch('https://api.spotify.com/v1/me', {
@@ -153,7 +137,7 @@ router.get('/api/spotify/status', async (req, res) => {
 
 // POST /api/spotify/refresh — refresh access token
 router.post('/api/spotify/refresh', async (req, res) => {
-  const config = await readSpotifyConfig();
+  const config = await spotifyConfig.read();
   if (!config.refresh_token) return res.status(401).json({ error: 'No refresh token' });
   try {
     const updated = await refreshSpotifyToken(config);
@@ -164,10 +148,8 @@ router.post('/api/spotify/refresh', async (req, res) => {
 });
 
 // GET /api/spotify/liked?offset=&limit= — proxy liked tracks
-router.get('/api/spotify/liked', async (req, res) => {
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+router.get('/api/spotify/liked', requireAuth(spotifyConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -184,10 +166,8 @@ router.get('/api/spotify/liked', async (req, res) => {
 });
 
 // GET /api/spotify/playlists — list user's playlists
-router.get('/api/spotify/playlists', async (req, res) => {
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+router.get('/api/spotify/playlists', requireAuth(spotifyConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
   try {
     const r = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
@@ -200,12 +180,10 @@ router.get('/api/spotify/playlists', async (req, res) => {
 });
 
 // GET /api/spotify/playlist-tracks?id=&offset=&limit=
-router.get('/api/spotify/playlist-tracks', async (req, res) => {
+router.get('/api/spotify/playlist-tracks', requireAuth(spotifyConfig), async (req, res) => {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'id required' });
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
   try {
@@ -227,10 +205,8 @@ router.get('/api/spotify/playlist-tracks', async (req, res) => {
 });
 
 // GET /api/spotify/devices — list available Spotify Connect devices
-router.get('/api/spotify/devices', async (req, res) => {
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+router.get('/api/spotify/devices', requireAuth(spotifyConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
   try {
     const devRes = await fetch('https://api.spotify.com/v1/me/player/devices', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
@@ -244,18 +220,16 @@ router.get('/api/spotify/devices', async (req, res) => {
 
 // POST /api/spotify/disconnect — remove tokens
 router.post('/api/spotify/disconnect', async (req, res) => {
-  const config = await readSpotifyConfig();
-  await writeSpotifyConfig({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
+  const config = await spotifyConfig.read();
+  await spotifyConfig.write({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
   res.json({ ok: true });
 });
 
 // GET /api/spotify/search?q=<query>&type=track
-router.get('/api/spotify/search', async (req, res) => {
+router.get('/api/spotify/search', requireAuth(spotifyConfig), async (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'q required' });
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
   const type = req.query.type || 'track';
   try {
     const spotRes = await fetch(
@@ -270,12 +244,10 @@ router.get('/api/spotify/search', async (req, res) => {
 });
 
 // POST /api/spotify/add-to-playlist — { playlistId, trackUri }
-router.post('/api/spotify/add-to-playlist', async (req, res) => {
+router.post('/api/spotify/add-to-playlist', requireAuth(spotifyConfig), async (req, res) => {
   const { playlistId, trackUri } = req.body || {};
   if (!playlistId || !trackUri) return res.status(400).json({ error: 'playlistId and trackUri required' });
-  let config = await readSpotifyConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
   try {
     const spotRes = await fetch(
       `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks`,

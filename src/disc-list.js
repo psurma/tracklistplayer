@@ -286,6 +286,7 @@ function renderDiscList() {
     return;
   }
 
+  const frag = document.createDocumentFragment();
   for (const disc of state.discs) {
     const section = document.createElement('div');
     section.className = 'disc-section';
@@ -325,7 +326,7 @@ function renderDiscList() {
       warn.className = 'disc-no-mp3';
       warn.textContent = 'No MP3 found for this CUE.';
       section.appendChild(warn);
-      discList.appendChild(section);
+      frag.appendChild(section);
       continue;
     }
 
@@ -373,7 +374,7 @@ function renderDiscList() {
         if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
       });
       section.appendChild(item);
-      discList.appendChild(section);
+      frag.appendChild(section);
       continue;
     }
 
@@ -425,9 +426,10 @@ function renderDiscList() {
       section.appendChild(item);
     }
 
-    discList.appendChild(section);
+    frag.appendChild(section);
   }
 
+  discList.appendChild(frag);
   applyFilter(filterInput.value);
 }
 

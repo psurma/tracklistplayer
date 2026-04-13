@@ -4,29 +4,13 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const https = require('https');
 const { BoundedMap, serverEscapeHtml, ensureFreshToken } = require('../lib/helpers');
 const { pendingSoundcloudStates } = require('../lib/oauth');
+const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
 
-const SOUNDCLOUD_CONFIG_PATH = path.join(os.homedir(), '.tracklistplayer', 'soundcloud.json');
+const soundcloudConfig = createConfigStore(path.join(TLP_DIR, 'soundcloud.json'));
 const SOUNDCLOUD_REDIRECT_URI = 'http://127.0.0.1:3123/auth/soundcloud/callback';
-
-async function readSoundcloudConfig() {
-  try {
-    const data = await fs.promises.readFile(SOUNDCLOUD_CONFIG_PATH, 'utf8');
-    return JSON.parse(data);
-  } catch (_) {
-    return {};
-  }
-}
-
-async function writeSoundcloudConfig(data) {
-  const dir = path.dirname(SOUNDCLOUD_CONFIG_PATH);
-  await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(SOUNDCLOUD_CONFIG_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
-}
 
 async function refreshSoundcloudToken(config) {
   const params = new URLSearchParams();
@@ -47,7 +31,7 @@ async function refreshSoundcloudToken(config) {
     expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
   };
   if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
-  await writeSoundcloudConfig(updated);
+  await soundcloudConfig.write(updated);
   return updated;
 }
 
@@ -99,7 +83,7 @@ const soundcloudCdnCache = new BoundedMap(200);
 
 // GET /api/soundcloud/config
 router.get('/api/soundcloud/config', async (_req, res) => {
-  const config = await readSoundcloudConfig();
+  const config = await soundcloudConfig.read();
   res.json({ connected: !!(config.access_token && config.refresh_token) });
 });
 
@@ -107,14 +91,14 @@ router.get('/api/soundcloud/config', async (_req, res) => {
 router.post('/api/soundcloud/credentials', async (req, res) => {
   const { client_id, client_secret } = req.body || {};
   if (!client_id || !client_secret) return res.status(400).json({ error: 'client_id and client_secret required' });
-  const existing = await readSoundcloudConfig();
-  await writeSoundcloudConfig({ ...existing, client_id, client_secret });
+  const existing = await soundcloudConfig.read();
+  await soundcloudConfig.write({ ...existing, client_id, client_secret });
   res.json({ ok: true });
 });
 
 // GET /api/soundcloud/auth-url
 router.get('/api/soundcloud/auth-url', async (_req, res) => {
-  const config = await readSoundcloudConfig();
+  const config = await soundcloudConfig.read();
   if (!config.client_id) return res.status(400).json({ error: 'No client_id configured' });
   const state = crypto.randomBytes(16).toString('hex');
   pendingSoundcloudStates.set(state, Date.now() + 10 * 60 * 1000); // 10 min TTL
@@ -136,7 +120,7 @@ router.get('/auth/soundcloud/callback', async (req, res) => {
   const stateExpiry = state && pendingSoundcloudStates.get(state);
   if (!stateExpiry || Date.now() > stateExpiry) return res.status(400).send('Invalid or expired state');
   pendingSoundcloudStates.delete(state);
-  const config = await readSoundcloudConfig();
+  const config = await soundcloudConfig.read();
   if (!config.client_id || !config.client_secret) return res.status(400).send('SoundCloud credentials not configured');
   try {
     const params = new URLSearchParams();
@@ -155,7 +139,7 @@ router.get('/auth/soundcloud/callback', async (req, res) => {
       return res.send(`<!DOCTYPE html><html><head><title>SoundCloud Auth</title></head><body style="font-family:sans-serif;background:#111;color:#fff;padding:40px"><h2 style="color:#e05050">Token exchange failed</h2><pre>${serverEscapeHtml(err)}</pre></body></html>`);
     }
     const tokenData = await tokenRes.json();
-    await writeSoundcloudConfig({
+    await soundcloudConfig.write({
       ...config,
       access_token: tokenData.access_token,
       refresh_token: tokenData.refresh_token,
@@ -169,7 +153,7 @@ router.get('/auth/soundcloud/callback', async (req, res) => {
 
 // GET /api/soundcloud/status
 router.get('/api/soundcloud/status', async (_req, res) => {
-  let config = await readSoundcloudConfig();
+  let config = await soundcloudConfig.read();
   if (!config.access_token) return res.json({ connected: false });
   try {
     let meRes = await fetch('https://api.soundcloud.com/me', {
@@ -191,7 +175,7 @@ router.get('/api/soundcloud/status', async (_req, res) => {
 
 // POST /api/soundcloud/refresh
 router.post('/api/soundcloud/refresh', async (_req, res) => {
-  const config = await readSoundcloudConfig();
+  const config = await soundcloudConfig.read();
   if (!config.refresh_token) return res.status(401).json({ error: 'No refresh token' });
   try {
     const updated = await refreshSoundcloudToken(config);
@@ -202,10 +186,8 @@ router.post('/api/soundcloud/refresh', async (_req, res) => {
 });
 
 // GET /api/soundcloud/playlists — user's own playlists (sets)
-router.get('/api/soundcloud/playlists', async (_req, res) => {
-  let config = await readSoundcloudConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSoundcloudToken);
+router.get('/api/soundcloud/playlists', requireAuth(soundcloudConfig), async (_req, res) => {
+  let config = await ensureFreshToken(_req.serviceConfig, refreshSoundcloudToken);
   try {
     const scRes = await fetch('https://api.soundcloud.com/me/playlists?limit=50', {
       headers: { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' },
@@ -219,10 +201,8 @@ router.get('/api/soundcloud/playlists', async (_req, res) => {
 });
 
 // GET /api/soundcloud/liked?next_href=
-router.get('/api/soundcloud/liked', async (req, res) => {
-  let config = await readSoundcloudConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSoundcloudToken);
+router.get('/api/soundcloud/liked', requireAuth(soundcloudConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken);
   try {
     const nextHref = req.query.next_href;
     if (nextHref && !nextHref.startsWith('https://api.soundcloud.com/')) {
@@ -246,10 +226,8 @@ router.get('/api/soundcloud/liked', async (req, res) => {
 });
 
 // GET /api/soundcloud/stream/:id
-router.get('/api/soundcloud/stream/:id', async (req, res) => {
-  let config = await readSoundcloudConfig();
-  if (!config.access_token) return res.status(401).json({ error: 'Not connected' });
-  config = await ensureFreshToken(config, refreshSoundcloudToken);
+router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken);
 
   const id = req.params.id;
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid track ID' });
@@ -333,8 +311,8 @@ router.get('/api/soundcloud/stream/:id', async (req, res) => {
 
 // POST /api/soundcloud/disconnect
 router.post('/api/soundcloud/disconnect', async (_req, res) => {
-  const config = await readSoundcloudConfig();
-  await writeSoundcloudConfig({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
+  const config = await soundcloudConfig.read();
+  await soundcloudConfig.write({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
   res.json({ ok: true });
 });
 

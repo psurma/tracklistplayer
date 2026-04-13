@@ -211,10 +211,10 @@ let discordRPC = null;
 
 function initDiscordRPC() {
   try {
-    const DiscordRPC = require('discord-rpc');
+    const { Client } = require('@xhayper/discord-rpc');
     const clientId = '1355601025153273916'; // public Discord app ID (not a secret)
-    discordRPC = new DiscordRPC.Client({ transport: 'ipc' });
-    discordRPC.login({ clientId }).catch(() => { discordRPC = null; });
+    discordRPC = new Client({ clientId });
+    discordRPC.login().catch(() => { discordRPC = null; });
   } catch (_) {
     discordRPC = null;
   }
@@ -224,9 +224,9 @@ function initDiscordRPC() {
 app.whenReady().then(() => { initDiscordRPC(); });
 
 ipcMain.handle('update-discord-presence', (_event, data) => {
-  if (!discordRPC) return;
+  if (!discordRPC || !discordRPC.user) return;
   try {
-    discordRPC.setActivity({
+    discordRPC.user.setActivity({
       details: data.track || 'No track',
       state: data.artist || '',
       largeImageKey: 'app-icon',
