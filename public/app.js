@@ -4,6 +4,11 @@
 if (navigator.userAgent.includes('Electron')) {
   document.body.classList.add('electron');
   if (window.electronAPI?.platform === 'darwin') document.body.classList.add('darwin');
+  window.electronAPI?.onMediaKey?.((key) => {
+    if (key === 'play-pause') document.getElementById('btn-play')?.click();
+    else if (key === 'next') document.getElementById('btn-next')?.click();
+    else if (key === 'prev') document.getElementById('btn-prev')?.click();
+  });
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -17,6 +22,7 @@ const state = {
   favorites: new Map(),   // keys: "mp3File:trackNumber" → favorite metadata
   queue: [],              // play queue: [{ discId, trackIdx, title, performer }]
   bookmarks: {},          // per-file: { mp3Path: [{ time, label }] }
+  collapsedDiscs: new Set(), // disc IDs that are collapsed in the sidebar
 };
 
 // ── Dual FancyScrubber ────────────────────────────────────────────────────────
@@ -493,6 +499,21 @@ sortToggle.addEventListener('click', () => {
   if (lastBrowseDir) renderFolderItems(lastBrowseDir, lastSubdirs);
 });
 
+// Expand / Collapse all disc sections
+function refreshDiscListView() {
+  renderDiscList();
+  highlightTrackInSidebar(state.currentDiscId, state.currentTrackIndex);
+}
+
+document.getElementById('expand-all-btn').addEventListener('click', () => {
+  state.collapsedDiscs.clear();
+  refreshDiscListView();
+});
+document.getElementById('collapse-all-btn').addEventListener('click', () => {
+  for (const disc of state.discs) state.collapsedDiscs.add(disc.id);
+  refreshDiscListView();
+});
+
 function normEntry(e) { return typeof e === 'string' ? { name: e, mtime: 0 } : e; }
 function sortedSubdirs(subdirs) {
   const copy = subdirs.map(normEntry);
@@ -821,11 +842,6 @@ nfoContent.addEventListener('click', (e) => {
   }
 });
 
-function formatTimeShort(s) {
-  if (!isFinite(s) || s < 0) return '';
-  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-}
-
 function renderTracklist(disc) {
   if (!disc || !disc.tracks || disc.tracks.length === 0) {
     tracklistContent.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--text-muted)">No tracks</div>';
@@ -836,7 +852,7 @@ function renderTracklist(disc) {
       <span class="tl-num">${String(t.track || i + 1).padStart(2, '0')}</span>
       <span class="tl-title">${escapeHtml(t.title || '')}</span>
       ${t.performer ? `<span class="tl-performer">${escapeHtml(t.performer)}</span>` : ''}
-      <span class="tl-time">${formatTimeShort(t.startSeconds)}</span>
+      <span class="tl-time">${formatTime(t.startSeconds)}</span>
     </div>`).join('');
 }
 
@@ -901,6 +917,7 @@ async function showNfo(dir) {
 }
 
 nfoPaneClose.addEventListener('click', () => {
+  setNfoPaneExpanded(false);
   setNfoPaneVisible(false);
   if (lastNfoDir || currentDisc()) nfoBtn.classList.remove('hidden');
 });
@@ -908,6 +925,39 @@ nfoPaneClose.addEventListener('click', () => {
 nfoBtn.addEventListener('click', () => {
   setNfoPaneVisible(true);
   nfoBtn.classList.add('hidden');
+});
+
+// Expand / collapse the NFO/tracklist pane to full height or restore
+const nfoPaneExpandBtn = document.getElementById('nfo-pane-expand');
+let nfoPaneIsExpanded = false;
+let savedMainTopH = null;
+
+function setNfoPaneExpanded(expanded) {
+  if (nfoPaneIsExpanded === expanded) return;
+  nfoPaneIsExpanded = expanded;
+  if (expanded) {
+    savedMainTopH = mainTop.style.height || null;
+    mainTop.style.height = '0px';
+    mainTop.style.overflow = 'hidden';
+    mainResizeH.style.display = 'none';
+    nfoPaneExpandBtn.innerHTML = '&#x2923;';
+    nfoPaneExpandBtn.title = 'Collapse tracklist pane';
+  } else {
+    mainTop.style.overflow = '';
+    mainResizeH.style.display = '';
+    if (savedMainTopH) {
+      mainTop.style.height = savedMainTopH;
+    } else {
+      mainTop.style.height = '';
+    }
+    savedMainTopH = null;
+    nfoPaneExpandBtn.innerHTML = '&#x2922;';
+    nfoPaneExpandBtn.title = 'Expand tracklist pane';
+  }
+}
+
+nfoPaneExpandBtn.addEventListener('click', () => {
+  setNfoPaneExpanded(!nfoPaneIsExpanded);
 });
 
 nfoDetectBtn.addEventListener('click', () => {
@@ -1191,11 +1241,23 @@ function renderDiscList() {
     const section = document.createElement('div');
     section.className = 'disc-section';
 
+    const isCollapsed = state.collapsedDiscs.has(disc.id);
+    if (isCollapsed) section.classList.add('disc-collapsed');
+
     const header = document.createElement('div');
     header.className = 'disc-header';
     const titleText = disc.albumTitle || disc.mp3File || `Disc ${disc.id + 1}`;
     const performer = disc.albumPerformer ? ` — <span>${escapeHtml(disc.albumPerformer)}</span>` : '';
-    header.innerHTML = `${escapeHtml(titleText)}${performer}`;
+    const arrow = `<span class="disc-toggle">${isCollapsed ? '\u25B6' : '\u25BC'}</span>`;
+    header.innerHTML = `${arrow}${escapeHtml(titleText)}${performer}`;
+    header.style.cursor = 'pointer';
+    header.addEventListener('click', () => {
+      const nowCollapsed = !state.collapsedDiscs.has(disc.id);
+      if (nowCollapsed) state.collapsedDiscs.add(disc.id);
+      else state.collapsedDiscs.delete(disc.id);
+      section.classList.toggle('disc-collapsed', nowCollapsed);
+      section.querySelector('.disc-toggle').textContent = nowCollapsed ? '\u25B6' : '\u25BC';
+    });
     section.appendChild(header);
 
     // v1.19.0: disc progress bar
@@ -1741,7 +1803,7 @@ const spotifyTracksLoadMoreBtn = document.getElementById('spotify-tracks-load-mo
 
 async function getSpotifyToken() {
   if (spotifyAccessToken && Date.now() < spotifyTokenExpiry - 60000) return spotifyAccessToken;
-  const res = await fetch('/api/spotify/refresh');
+  const res = await fetch('/api/spotify/refresh', { method: 'POST' });
   if (!res.ok) throw new Error('Token refresh failed');
   const data = await res.json();
   spotifyAccessToken = data.access_token;
@@ -1948,7 +2010,7 @@ async function loadSpotifyTracks(source, offset) {
 
     const frag = document.createDocumentFragment();
     for (const item of (data.items || [])) {
-      const track = source.type === 'liked' ? item.track : item.track;
+      const track = item.track;
       if (!track) continue;
       const el = document.createElement('div');
       el.className = 'spotify-track-item';
@@ -2128,7 +2190,7 @@ async function playSpotifyTrack(uri) {
 }
 
 async function disconnectSpotify() {
-  await fetch('/api/spotify/disconnect').catch(() => {});
+  await fetch('/api/spotify/disconnect', { method: 'POST' }).catch(() => {});
   spotifyConnected = false;
   spotifyAccessToken = null;
   spotifyTokenExpiry = 0;
@@ -2177,7 +2239,7 @@ const soundcloudTracksLoadMoreBtn = document.getElementById('soundcloud-tracks-l
 
 async function getSoundcloudToken() {
   if (soundcloudAccessToken && Date.now() < soundcloudTokenExpiry - 60000) return soundcloudAccessToken;
-  const res = await fetch('/api/soundcloud/refresh');
+  const res = await fetch('/api/soundcloud/refresh', { method: 'POST' });
   if (!res.ok) throw new Error('SoundCloud token refresh failed');
   const data = await res.json();
   soundcloudAccessToken = data.access_token;
@@ -2233,25 +2295,27 @@ async function loadSoundcloudPlaylists() {
   } catch (_) {}
 }
 
+function createSoundcloudTrackEl(track, idx) {
+  const el = document.createElement('div');
+  el.className = 'soundcloud-track-item';
+  el.dataset.idx = String(idx);
+  const dur = track.duration ? formatDuration(Math.round(track.duration / 1000)) : '';
+  el.innerHTML = `<span class="soundcloud-play-icon">&#9654;</span>`
+    + `<div class="soundcloud-track-info">`
+    + `<div class="soundcloud-track-title">${escapeHtml(track.title || '—')}</div>`
+    + `<div class="soundcloud-track-artist">${escapeHtml(track.user ? track.user.username : '')}</div>`
+    + `</div>`
+    + `<span class="soundcloud-track-duration">${escapeHtml(dur)}</span>`;
+  el.addEventListener('click', () => playSoundcloudTrack(idx));
+  return el;
+}
+
 function loadSoundcloudPlaylistTracks(pl) {
   soundcloudTracks = (pl.tracks || []).filter((t) => t && t.id);
   soundcloudNextHref = null;
   soundcloudTracksList.innerHTML = '';
   const frag = document.createDocumentFragment();
-  soundcloudTracks.forEach((track, idx) => {
-    const el = document.createElement('div');
-    el.className = 'soundcloud-track-item';
-    el.dataset.idx = String(idx);
-    const dur = track.duration ? formatDuration(Math.round(track.duration / 1000)) : '';
-    el.innerHTML = `<span class="soundcloud-play-icon">&#9654;</span>`
-      + `<div class="soundcloud-track-info">`
-      + `<div class="soundcloud-track-title">${escapeHtml(track.title || '—')}</div>`
-      + `<div class="soundcloud-track-artist">${escapeHtml(track.user ? track.user.username : '')}</div>`
-      + `</div>`
-      + `<span class="soundcloud-track-duration">${escapeHtml(dur)}</span>`;
-    el.addEventListener('click', () => playSoundcloudTrack(idx));
-    frag.appendChild(el);
-  });
+  soundcloudTracks.forEach((track, idx) => frag.appendChild(createSoundcloudTrackEl(track, idx)));
   soundcloudTracksList.appendChild(frag);
   soundcloudTracksFooter.classList.add('hidden');
 }
@@ -2315,19 +2379,7 @@ async function loadSoundcloudTracks(nextHref) {
 
     const frag = document.createDocumentFragment();
     (data.collection || []).forEach((track, i) => {
-      const idx = startIdx + i;
-      const el = document.createElement('div');
-      el.className = 'soundcloud-track-item';
-      el.dataset.idx = String(idx);
-      const dur = track.duration ? formatDuration(Math.round(track.duration / 1000)) : '';
-      el.innerHTML = `<span class="soundcloud-play-icon">&#9654;</span>`
-        + `<div class="soundcloud-track-info">`
-        + `<div class="soundcloud-track-title">${escapeHtml(track.title || '—')}</div>`
-        + `<div class="soundcloud-track-artist">${escapeHtml(track.user ? track.user.username : '')}</div>`
-        + `</div>`
-        + `<span class="soundcloud-track-duration">${escapeHtml(dur)}</span>`;
-      el.addEventListener('click', () => playSoundcloudTrack(idx));
-      frag.appendChild(el);
+      frag.appendChild(createSoundcloudTrackEl(track, startIdx + i));
     });
     soundcloudTracksList.appendChild(frag);
 
@@ -2441,7 +2493,7 @@ async function connectSoundcloud() {
 }
 
 async function disconnectSoundcloud() {
-  await fetch('/api/soundcloud/disconnect').catch(() => {});
+  await fetch('/api/soundcloud/disconnect', { method: 'POST' }).catch(() => {});
   soundcloudConnected = false;
   soundcloudAccessToken = null;
   soundcloudTokenExpiry = 0;
@@ -3441,10 +3493,32 @@ function initSidebarResize() {
 }
 
 // ── Panel height resize (between folder browser and track list) ───────────────
+const MIN_PANEL_H = 60;
+const DEFAULT_BROWSER_RATIO = 0.4;
+const sidebarHeader = sidebar.querySelector('#sidebar-header');
+
+function getAvailablePanelHeight() {
+  return sidebar.offsetHeight - sidebarHeader.offsetHeight - panelResize.offsetHeight;
+}
+
+function setBrowserPanelHeight(value, unit = 'px') {
+  const v = `${value}${unit}`;
+  folderBrowser.style.height = v;
+  soundcloudBrowser.style.height = v;
+  spotifyBrowser.style.height = v;
+  document.documentElement.style.setProperty('--browser-height', v);
+}
+
+function persistBrowserH() {
+  const h = folderBrowser.offsetHeight;
+  STORAGE.setBrowserH(Math.round((h / getAvailablePanelHeight()) * 100));
+}
+
 function initPanelResize() {
   let startY = 0, startH = 0;
 
   panelResize.addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return;
     e.preventDefault();
     startY = e.clientY;
     startH = soundcloudMode ? soundcloudBrowser.offsetHeight : spotifyMode ? spotifyBrowser.offsetHeight : folderBrowser.offsetHeight;
@@ -3455,16 +3529,9 @@ function initPanelResize() {
 
   document.addEventListener('mousemove', (e) => {
     if (!panelResize.classList.contains('dragging')) return;
-    const sidebarH = sidebar.offsetHeight;
-    const headerH = sidebar.querySelector('#sidebar-header').offsetHeight;
-    const available = sidebarH - headerH - panelResize.offsetHeight;
-    const newH = Math.max(60, Math.min(available - 60, startH + e.clientY - startY));
-    const pct = Math.round((newH / available) * 100);
-    document.documentElement.style.setProperty('--browser-height', `${newH}px`);
-    folderBrowser.style.height = `${newH}px`;
-    spotifyBrowser.style.height = `${newH}px`;
-    soundcloudBrowser.style.height = `${newH}px`;
-    STORAGE.setBrowserH(pct);
+    const available = getAvailablePanelHeight();
+    const newH = Math.max(MIN_PANEL_H, Math.min(available - MIN_PANEL_H, startH + e.clientY - startY));
+    setBrowserPanelHeight(newH);
   });
 
   document.addEventListener('mouseup', () => {
@@ -3472,9 +3539,29 @@ function initPanelResize() {
       panelResize.classList.remove('dragging');
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
+      persistBrowserH();
     }
   });
 }
+
+// ── Panel maximize/minimize (folder browser vs disc list) ─────────────────────
+document.getElementById('panel-maximize-tracks').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setBrowserPanelHeight(MIN_PANEL_H);
+  persistBrowserH();
+});
+
+document.getElementById('panel-maximize-browser').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setBrowserPanelHeight(getAvailablePanelHeight() - MIN_PANEL_H);
+  persistBrowserH();
+});
+
+// Double-click the resize bar to restore default 40% split
+panelResize.addEventListener('dblclick', () => {
+  setBrowserPanelHeight(Math.round(getAvailablePanelHeight() * DEFAULT_BROWSER_RATIO));
+  persistBrowserH();
+});
 
 // ── Main pane resize (between top section and NFO) ────────────────────────────
 function initMainResize() {
@@ -3931,10 +4018,7 @@ async function init() {
 
   // Restore panel split height
   const browserPct = parseInt(STORAGE.getBrowserH(), 10);
-  if (browserPct) {
-    document.documentElement.style.setProperty('--browser-height', `${browserPct}%`);
-    folderBrowser.style.height = `${browserPct}%`;
-  }
+  if (browserPct) setBrowserPanelHeight(browserPct, '%');
 
   setSidebarCollapsed(false);
   initSidebarResize();
@@ -4522,7 +4606,7 @@ document.getElementById('lastfm-connect-btn')?.addEventListener('click', async (
 });
 
 document.getElementById('lastfm-disconnect-btn')?.addEventListener('click', async () => {
-  await fetch('/api/lastfm/disconnect');
+  await fetch('/api/lastfm/disconnect', { method: 'POST' });
   document.getElementById('lastfm-settings-status').textContent = 'Disconnected';
   document.getElementById('lastfm-disconnect-row').classList.add('hidden');
 });

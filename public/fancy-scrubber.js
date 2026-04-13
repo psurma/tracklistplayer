@@ -67,8 +67,11 @@ class FancyScrubber {
   }
 
   tick(audioCurrentTime) {
+    if (!this.peaks) { this.currentTime = audioCurrentTime; return; }
+    // Skip redraw when time hasn't changed (paused, no seek)
+    if (audioCurrentTime === this._lastTickTime) return;
+    this._lastTickTime = audioCurrentTime;
     this.currentTime = audioCurrentTime;
-    if (!this.peaks) return;
 
     // Overview mode: always show full track, no scrolling
     if (!this._showRuler && this.duration > 0) {

@@ -18,12 +18,14 @@
             <div id="dir-library-dropdown" class="hidden"></div>
           </div>
           <button id="dir-browse-btn" title="Browse for folder">&#128193;</button>
-          <button id="dir-load-btn">Go</button>
+          <button id="dir-load-btn" title="Load directory">Go</button>
         </div>
         <div id="filter-bar">
           <input type="text" id="filter-input" placeholder="Filter folders..." autocomplete="off" spellcheck="false" />
           <button id="filter-clear" title="Clear filter" class="hidden">&#x2715;</button>
-          <button id="sort-toggle" title="Sort folders">A–Z</button>
+          <button id="sort-toggle" title="Sort folders">A&ndash;Z</button>
+          <button id="expand-all-btn" title="Expand all albums">&#x25BC;</button>
+          <button id="collapse-all-btn" title="Collapse all albums">&#x25B6;</button>
         </div>
       </div>
 
@@ -36,7 +38,7 @@
           <div class="soundcloud-browser-card">
             <p>Connect SoundCloud to browse liked tracks.</p>
             <p class="soundcloud-browser-hint">Configure credentials in Settings ⚙</p>
-            <button id="soundcloud-browser-connect-btn">Connect</button>
+            <button id="soundcloud-browser-connect-btn" title="Connect to SoundCloud">Connect</button>
           </div>
         </div>
         <div id="soundcloud-playlist-list"></div>
@@ -47,19 +49,22 @@
           <div class="spotify-browser-card">
             <p>Connect Spotify to browse playlists.</p>
             <p class="spotify-browser-hint">Configure credentials in Settings ⚙</p>
-            <button id="spotify-browser-connect-btn">Connect</button>
+            <button id="spotify-browser-connect-btn" title="Connect to Spotify">Connect</button>
           </div>
         </div>
         <div id="spotify-playlist-list"></div>
       </div>
 
-      <div id="panel-resize"></div>
+      <div id="panel-resize">
+        <button id="panel-maximize-tracks" title="Maximize tracklist">&#x25B2;</button>
+        <button id="panel-maximize-browser" title="Maximize folder browser">&#x25BC;</button>
+      </div>
 
       <div id="disc-list"></div>
       <div id="soundcloud-tracks-panel" class="hidden">
         <div id="soundcloud-tracks-list"></div>
         <div id="soundcloud-tracks-footer" class="hidden">
-          <button id="soundcloud-tracks-load-more-btn">Load more</button>
+          <button id="soundcloud-tracks-load-more-btn" title="Load more SoundCloud tracks">Load more</button>
         </div>
       </div>
 
@@ -70,7 +75,7 @@
         </div>
         <div id="spotify-tracks-list"></div>
         <div id="spotify-tracks-footer" class="hidden">
-          <button id="spotify-tracks-load-more-btn">Load more</button>
+          <button id="spotify-tracks-load-more-btn" title="Load more Spotify tracks">Load more</button>
         </div>
       </div>
     </aside>
@@ -181,7 +186,7 @@
               <div class="settings-label">Library Search Index</div>
               <div class="settings-hint">Rebuild the search index if newly added folders or files are not appearing in search results.</div>
               <div class="settings-row" style="margin-top:8px">
-                <button class="seg-btn" id="reindex-btn">Rebuild Index</button>
+                <button class="seg-btn" id="reindex-btn" title="Rebuild the search index">Rebuild Index</button>
                 <span id="reindex-status" style="font-size:11px;color:var(--text-muted);margin-left:10px"></span>
               </div>
             </div>
@@ -268,7 +273,7 @@
         <div id="queue-bar">
           <span>Up Next</span>
           <span id="queue-count"></span>
-          <button id="queue-clear" title="Clear queue">Clear</button>
+          <button id="queue-clear" title="Clear play queue">Clear</button>
           <button id="queue-close" title="Close">&#x2715;</button>
         </div>
         <div id="queue-list"></div>
@@ -304,7 +309,7 @@
       <div id="eq-panel" class="hidden">
         <div id="eq-header">
           <span>EQ</span>
-          <button id="eq-reset" title="Reset">Reset</button>
+          <button id="eq-reset" title="Reset equalizer">Reset</button>
           <button id="eq-close" title="Close">&#x2715;</button>
         </div>
         <div id="eq-sliders">
@@ -365,6 +370,7 @@
             <button class="nfo-tab hidden" data-tab="detect" id="nfo-tab-detect-btn">DETECT</button>
           </div>
           <button id="nfo-detect-btn" title="Auto-detect track transitions" class="hidden">Detect</button>
+          <button id="nfo-pane-expand" title="Expand tracklist pane">&#x2922;</button>
           <button id="nfo-pane-close" title="Close">&#x2715;</button>
         </div>
         <div id="nfo-tab-nfo">
@@ -381,7 +387,7 @@
           <div id="detect-tracks-list"></div>
           <div id="detect-footer">
             <span id="detect-confidence-legend">&#9679; high  &#9679; mid  &#9679; low confidence</span>
-            <button id="detect-apply-btn" disabled>Apply tracklist</button>
+            <button id="detect-apply-btn" title="Apply detected tracklist" disabled>Apply tracklist</button>
           </div>
         </div>
 
@@ -410,15 +416,15 @@
     </div>
     <div id="sleep-popover" class="hidden">
       <div class="sleep-presets">
-        <button data-mins="15">15m</button>
-        <button data-mins="30">30m</button>
-        <button data-mins="45">45m</button>
-        <button data-mins="60">60m</button>
-        <button data-mins="90">90m</button>
+        <button data-mins="15" title="Sleep in 15 minutes">15m</button>
+        <button data-mins="30" title="Sleep in 30 minutes">30m</button>
+        <button data-mins="45" title="Sleep in 45 minutes">45m</button>
+        <button data-mins="60" title="Sleep in 60 minutes">60m</button>
+        <button data-mins="90" title="Sleep in 90 minutes">90m</button>
       </div>
       <div id="sleep-active" class="hidden">
         <span id="sleep-remaining"></span>
-        <button id="sleep-cancel">Cancel</button>
+        <button id="sleep-cancel" title="Cancel sleep timer">Cancel</button>
       </div>
     </div>
 
@@ -444,7 +450,7 @@
     <div id="dir-modal">
       <div id="dir-modal-header">
         <span id="dir-modal-title">Choose folder</span>
-        <button id="dir-modal-close">&#x2715;</button>
+        <button id="dir-modal-close" title="Close">&#x2715;</button>
       </div>
       <div id="dir-modal-body">
         <div id="dir-modal-favourites" class="hidden">
@@ -464,7 +470,7 @@
         </div>
         <div id="dir-modal-actions">
           <button id="dir-modal-add-fav" title="Save to favourites">&#9733; Save</button>
-          <button id="dir-modal-go" class="primary">Go</button>
+          <button id="dir-modal-go" class="primary" title="Open selected folder">Go</button>
         </div>
       </div>
     </div>
@@ -479,7 +485,7 @@
       </div>
       <div id="library-folder-list"></div>
       <div id="library-modal-footer">
-        <button id="library-add-btn">+ Add Folder</button>
+        <button id="library-add-btn" title="Add folder to library">+ Add Folder</button>
       </div>
     </div>
   </div>
@@ -501,7 +507,7 @@
     <div id="spotify-save-modal">
       <div id="spotify-save-header">
         <span>Save to Spotify</span>
-        <button id="spotify-save-close">&#x2715;</button>
+        <button id="spotify-save-close" title="Close">&#x2715;</button>
       </div>
       <div id="spotify-save-body">
         <div id="spotify-save-match"></div>
@@ -527,29 +533,29 @@
       </div>
       <div id="tl-search-row">
         <input id="tl-query-input" type="text" autocomplete="off" spellcheck="false" placeholder="Search MixesDB…" />
-        <button id="tl-search-go">Search</button>
+        <button id="tl-search-go" title="Search for tracklist">Search</button>
       </div>
       <div id="tl-body">
         <div id="tl-results"></div>
         <div id="tl-tracks-pane" class="hidden">
           <div id="tl-tracks-header">
-            <button id="tl-back-btn">&#x2190; Back</button>
+            <button id="tl-back-btn" title="Back to search results">&#x2190; Back</button>
             <span id="tl-tracks-title"></span>
           </div>
           <div id="tl-tracks-list"></div>
           <div id="tl-tracks-footer">
             <a id="tl-source-link" href="#" target="_blank" rel="noopener noreferrer">View on MixesDB</a>
-            <button id="tl-apply-btn">Use this tracklist</button>
+            <button id="tl-apply-btn" title="Apply this tracklist to the current album">Use this tracklist</button>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <script src="waveform.js?v=1.19.2"></script>
-  <script src="spectrum.js?v=1.19.2"></script>
-  <script src="fancy-scrubber.js?v=1.19.2"></script>
-  <script src="app.js?v=1.19.2"></script>
+  <script src="waveform.js?v=1.20.0"></script>
+  <script src="spectrum.js?v=1.20.0"></script>
+  <script src="fancy-scrubber.js?v=1.20.0"></script>
+  <script src="app.js?v=1.20.0"></script>
   <script async src="https://sdk.scdn.co/spotify-player.js"></script>
 </body>
 </html>

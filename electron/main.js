@@ -1,9 +1,35 @@
 'use strict';
 
-const { app, BrowserWindow, globalShortcut, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+
+// ── Graceful error handling ──────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  const msg = err?.message || String(err);
+  console.error('[uncaughtException]', err);
+  // Transient I/O errors (e.g. external drive hiccup) — log and continue
+  const transient = err?.code === 'EIO' || err?.code === 'ENOENT';
+  const externalPerm = err?.code === 'EPERM' && err?.path && !err.path.startsWith(app.getPath('userData'));
+  if (transient || externalPerm) {
+    return;
+  }
+  // Show a non-fatal dialog if the app is ready
+  if (app.isReady()) {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Unexpected Error',
+      message: 'Something went wrong, but the app will try to keep running.',
+      detail: msg,
+      buttons: ['OK'],
+    });
+  }
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
 
 // ── Window state persistence ──────────────────────────────────────────────────
 const stateFile = path.join(app.getPath('userData'), 'window-state.json');
@@ -107,19 +133,13 @@ function createWindow() {
 
 function registerMediaKeys() {
   globalShortcut.register('MediaPlayPause', () => {
-    mainWindow?.webContents.executeJavaScript(
-      'document.getElementById("btn-play")?.click()'
-    );
+    mainWindow?.webContents.send('media-key', 'play-pause');
   });
   globalShortcut.register('MediaNextTrack', () => {
-    mainWindow?.webContents.executeJavaScript(
-      'document.getElementById("btn-next")?.click()'
-    );
+    mainWindow?.webContents.send('media-key', 'next');
   });
   globalShortcut.register('MediaPreviousTrack', () => {
-    mainWindow?.webContents.executeJavaScript(
-      'document.getElementById("btn-prev")?.click()'
-    );
+    mainWindow?.webContents.send('media-key', 'prev');
   });
 }
 
@@ -151,7 +171,6 @@ ipcMain.handle('open-external', (_event, url) => {
 });
 
 ipcMain.handle('pick-directory', async () => {
-  const { dialog } = require('electron');
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
     title: 'Select music folder',
@@ -161,14 +180,14 @@ ipcMain.handle('pick-directory', async () => {
 
 // Ensure preferred audio input is active when playback starts (macOS only).
 // Bluetooth headphones (AirPods etc.) grab the input and force a low-quality codec.
-const PREFERRED_AUDIO_INPUT = 'Elgato Wave:3';
+const { SPAWN_ENV } = require('../lib/env');
+const AUDIO_SETTINGS_PATH = path.join(app.getPath('home'), '.tracklistplayer', 'audio-settings.json');
+function getPreferredAudioInput() {
+  try { return JSON.parse(fs.readFileSync(AUDIO_SETTINGS_PATH, 'utf8')).preferredInput || ''; }
+  catch (_) { return ''; }
+}
 const AUDIO_CHECK_COOLDOWN_MS = 5000;
 let lastAudioCheck = 0;
-
-const SWITCH_ENV = {
-  ...process.env,
-  PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(':'),
-};
 
 ipcMain.handle('fix-audio-input', () => {
   if (process.platform !== 'darwin') return;
@@ -176,11 +195,13 @@ ipcMain.handle('fix-audio-input', () => {
   if (now - lastAudioCheck < AUDIO_CHECK_COOLDOWN_MS) return;
   lastAudioCheck = now;
 
-  execFile('SwitchAudioSource', ['-c', '-t', 'input'], { env: SWITCH_ENV }, (err, stdout) => {
+  const preferred = getPreferredAudioInput();
+  if (!preferred) return;
+  execFile('SwitchAudioSource', ['-c', '-t', 'input'], { env: SPAWN_ENV }, (err, stdout) => {
     if (err) return;
     const current = stdout.trim();
-    if (current !== PREFERRED_AUDIO_INPUT) {
-      execFile('SwitchAudioSource', ['-t', 'input', '-s', PREFERRED_AUDIO_INPUT], { env: SWITCH_ENV }, () => {});
+    if (current !== preferred) {
+      execFile('SwitchAudioSource', ['-t', 'input', '-s', preferred], { env: SPAWN_ENV }, () => {});
     }
   });
 });
@@ -191,7 +212,7 @@ let discordRPC = null;
 function initDiscordRPC() {
   try {
     const DiscordRPC = require('discord-rpc');
-    const clientId = '1355601025153273916';
+    const clientId = '1355601025153273916'; // public Discord app ID (not a secret)
     discordRPC = new DiscordRPC.Client({ transport: 'ipc' });
     discordRPC.login({ clientId }).catch(() => { discordRPC = null; });
   } catch (_) {

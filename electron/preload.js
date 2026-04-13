@@ -9,5 +9,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   revealFile:     (path) => ipcRenderer.invoke('reveal-in-finder', path),
   fixAudioInput:  ()     => ipcRenderer.invoke('fix-audio-input'),
   updateDiscordPresence: (data) => ipcRenderer.invoke('update-discord-presence', data),
+  onMediaKey:     (cb)   => ipcRenderer.on('media-key', (_event, key) => cb(key)),
   platform:       process.platform,
 });

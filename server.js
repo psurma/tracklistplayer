@@ -8,24 +8,57 @@ const os = require('os');
 const { findCueMp3Pairs, scanDirAsync } = require('./lib/cueParser');
 const { spawn } = require('child_process');
 const https = require('https');
-
-// Augment PATH so ffmpeg is found when running as a packaged Electron app,
-// which inherits a minimal macOS PATH that excludes Homebrew (/opt/homebrew/bin).
-const SPAWN_ENV = {
-  ...process.env,
-  PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(':'),
-};
+const helmet = require('helmet');
+const { SPAWN_ENV } = require('./lib/env');
 
 const app = express();
 const PORT = 3123;
 
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://sdk.scdn.co"],
+      connectSrc: ["'self'", "https://api.spotify.com", "https://sdk.scdn.co"],
+      imgSrc: ["'self'", "data:", "https://i.scdn.co", "https://*.sndcdn.com", "https://coverartarchive.org", "https://*.archive.org"],
+      mediaSrc: ["'self'", "blob:"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    },
+  },
+}));
 app.use(express.json());
+
+// ── Origin guard ─────────────────────────────────────────────────────────────
+// Block cross-origin requests to /api/* from non-localhost origins.
+// This prevents browser-based CSRF/SSRF attacks against the local server.
+app.use('/api', (req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Path safety helper ────────────────────────────────────────────────────────
 // Returns the resolved absolute path only if it falls within one of the allowed roots.
 // Returns null if the path escapes all roots (path traversal attempt).
 const AUDIO_FILE_EXTS = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus', '.wma', '.cue']);
+
+// Simple bounded Map: evicts oldest entry when maxSize is exceeded
+class BoundedMap extends Map {
+  constructor(maxSize) { super(); this._max = maxSize; }
+  set(key, value) {
+    if (this.has(key)) this.delete(key); // refresh position
+    super.set(key, value);
+    if (this.size > this._max) {
+      const oldest = this.keys().next().value;
+      this.delete(oldest);
+    }
+    return this;
+  }
+}
 
 function resolveAndValidate(inputPath, allowedRoots) {
   if (!inputPath) return null;
@@ -87,7 +120,8 @@ app.get('/api/library-index', async (req, res) => {
     libraryIndexCache = results.flat();
     res.json(libraryIndexCache);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[library-index]', err);
+    res.status(500).json({ error: 'Failed to build library index' });
   }
 });
 
@@ -141,7 +175,7 @@ async function refreshSpotifyToken(config) {
 // Shared helper: auto-refresh an access token if it expires within 60 s
 async function ensureFreshToken(config, refreshFn) {
   if (config.expires_at && Date.now() > config.expires_at - 60000) {
-    try { return await refreshFn(config); } catch (_) {}
+    try { return await refreshFn(config); } catch (err) { console.warn('[auth] token refresh failed:', err.message); }
   }
   return config;
 }
@@ -167,6 +201,7 @@ app.post('/api/spotify/credentials', async (req, res) => {
 // Pending OAuth state tokens — prevent CSRF on callbacks (M4)
 const pendingSpotifyStates = new Map();
 const pendingSoundcloudStates = new Map();
+let pendingLastfmAuth = 0; // expiry timestamp; Last.fm doesn't support state param
 
 // Periodically remove expired OAuth state tokens to prevent unbounded growth
 setInterval(() => {
@@ -177,6 +212,7 @@ setInterval(() => {
   for (const [st, expiry] of pendingSoundcloudStates) {
     if (now > expiry) pendingSoundcloudStates.delete(st);
   }
+  if (pendingLastfmAuth && now > pendingLastfmAuth) pendingLastfmAuth = 0;
 }, 15 * 60 * 1000);
 
 // GET /api/spotify/auth-url — generate Spotify authorize URL
@@ -265,8 +301,8 @@ app.get('/api/spotify/status', async (req, res) => {
   res.json({ connected: !!(config.access_token), displayName: '' });
 });
 
-// GET /api/spotify/refresh — refresh access token
-app.get('/api/spotify/refresh', async (req, res) => {
+// POST /api/spotify/refresh — refresh access token
+app.post('/api/spotify/refresh', async (req, res) => {
   const config = await readSpotifyConfig();
   if (!config.refresh_token) return res.status(401).json({ error: 'No refresh token' });
   try {
@@ -357,8 +393,8 @@ app.get('/api/spotify/devices', async (req, res) => {
   }
 });
 
-// GET /api/spotify/disconnect — remove tokens
-app.get('/api/spotify/disconnect', async (req, res) => {
+// POST /api/spotify/disconnect — remove tokens
+app.post('/api/spotify/disconnect', async (req, res) => {
   const config = await readSpotifyConfig();
   await writeSpotifyConfig({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
   res.json({ ok: true });
@@ -399,13 +435,14 @@ app.get('/api/scan', async (req, res) => {
     scanCache.set(dir, result);
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('[scan]', err);
+    return res.status(500).json({ error: 'Failed to scan directory' });
   }
 });
 
 // Session-scoped caches for directory listings and scans
-const lsCache   = new Map();
-const scanCache = new Map();
+const lsCache   = new BoundedMap(200);
+const scanCache = new BoundedMap(200);
 
 async function hasMusic(dirPath) {
   try {
@@ -418,6 +455,8 @@ async function hasMusic(dirPath) {
 
 // GET /api/ls?dir=<path>&bust=1
 // Returns cached JSON instantly if available; otherwise falls through to SSE stream.
+// Note: these endpoints intentionally browse outside library roots to support the
+// directory picker modal. Cross-origin abuse is prevented by the origin guard above.
 app.get('/api/ls', async (req, res) => {
   if (!req.query.dir) return res.status(400).json({ error: 'dir required' });
   const dir = path.resolve(req.query.dir); // canonicalise; prevents ../.. traversal
@@ -477,7 +516,8 @@ app.get('/api/ls-stream', async (req, res) => {
     lsCache.set(dir, { dir, parent, subdirs: collected });
     send({ type: 'done' });
   } catch (err) {
-    send({ type: 'error', message: err.message });
+    console.error('[ls-stream]', err);
+    send({ type: 'error', message: 'Failed to read directory' });
   }
   res.end();
 });
@@ -528,12 +568,13 @@ app.get('/api/nfo', async (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.send(text);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[nfo]', err);
+    res.status(500).json({ error: 'Failed to read NFO file' });
   }
 });
 
 // Waveform cache (in-memory, keyed by absolute mp3 path)
-const waveformCache = new Map();
+const waveformCache = new BoundedMap(200);
 
 // Shared helper: decode audio via ffmpeg, bucket into amplitude arrays, cache result.
 // Both /api/waveform and /api/detect-transitions call this to avoid re-decoding.
@@ -647,7 +688,8 @@ app.get('/api/waveform', async (req, res) => {
   try {
     res.json(await getOrComputeWaveform(filePath, bucketMs));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[waveform]', err);
+    res.status(500).json({ error: 'Waveform analysis failed' });
   }
 });
 
@@ -728,7 +770,8 @@ app.get('/api/detect-transitions', async (req, res) => {
 
     res.json({ duration: Math.round(wf.duration), transitions });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[detect]', err);
+    res.status(500).json({ error: 'Transition detection failed' });
   }
 });
 
@@ -837,7 +880,7 @@ app.get('/api/sync-test', (req, res) => {
 });
 
 // Music index cache (keyed by root dir)
-const indexCache = new Map();
+const indexCache = new BoundedMap(50);
 
 // Recursively scan rootDir (BFS, max depth 5) and build a flat array of disc records
 // Core scanner — calls onEntry(entry) for each album found, returns full list when done
@@ -884,7 +927,7 @@ async function buildMusicIndexStreaming(rootDir, onEntry) {
               queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
             }
           }
-        } catch (_) {}
+        } catch (err) { console.warn('[index] readdir failed:', dir, err.message); }
       }
     }));
   }
@@ -912,7 +955,8 @@ app.get('/api/index', async (req, res) => {
     indexCache.set(root, index);
     res.json(index);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[index]', err);
+    res.status(500).json({ error: 'Failed to build index' });
   }
 });
 
@@ -950,7 +994,8 @@ app.get('/api/index-stream', async (req, res) => {
     });
     indexCache.set(root, results);
   } catch (err) {
-    if (!res.writableEnded) res.write(`data: {"done":true,"error":${JSON.stringify(err.message)}}\n\n`);
+    console.error('[index-stream]', err);
+    if (!res.writableEnded) res.write('data: {"done":true,"error":"Indexing failed"}\n\n');
     res.end();
     return;
   }
@@ -958,7 +1003,7 @@ app.get('/api/index-stream', async (req, res) => {
 });
 
 // Artwork cache (keyed by absolute mp3 path)
-const artworkCache = new Map();
+const artworkCache = new BoundedMap(500);
 
 // GET /api/artwork?path=<absolute mp3 path>
 // Returns album art: checks folder for common image files first, then ffmpeg embedded art
@@ -1068,7 +1113,7 @@ app.get('/api/reveal', (req, res) => {
 });
 
 // GET /file?path=<absolute encoded path> — stream MP3 with range support
-app.get('/file', (req, res) => {
+app.get('/file', async (req, res) => {
   const filePath = resolveAndValidate(req.query.path, readLibrary());
   if (!filePath) {
     return res.status(400).send('path query parameter required');
@@ -1079,11 +1124,13 @@ app.get('/file', (req, res) => {
     return res.status(400).send('File type not allowed');
   }
 
-  if (!fs.existsSync(filePath)) {
+  let stat;
+  try {
+    stat = await fs.promises.stat(filePath);
+  } catch (_) {
     return res.status(404).send('File not found');
   }
 
-  const stat = fs.statSync(filePath);
   const fileSize = stat.size;
   const range = req.headers.range;
 
@@ -1409,8 +1456,8 @@ app.get('/api/soundcloud/status', async (_req, res) => {
   res.json({ connected: !!(config.access_token) });
 });
 
-// GET /api/soundcloud/refresh
-app.get('/api/soundcloud/refresh', async (_req, res) => {
+// POST /api/soundcloud/refresh
+app.post('/api/soundcloud/refresh', async (_req, res) => {
   const config = await readSoundcloudConfig();
   if (!config.refresh_token) return res.status(401).json({ error: 'No refresh token' });
   try {
@@ -1466,7 +1513,7 @@ app.get('/api/soundcloud/liked', async (req, res) => {
 });
 
 // CDN URL cache keyed by track id (avoids re-resolving on every range request)
-const soundcloudCdnCache = new Map();
+const soundcloudCdnCache = new BoundedMap(200);
 
 // GET /api/soundcloud/stream/:id
 app.get('/api/soundcloud/stream/:id', async (req, res) => {
@@ -1475,6 +1522,7 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
   config = await ensureFreshToken(config, refreshSoundcloudToken);
 
   const id = req.params.id;
+  if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid track ID' });
 
   // Use cached CDN URL if still fresh
   let cdnUrl = null;
@@ -1554,8 +1602,8 @@ app.get('/api/soundcloud/stream/:id', async (req, res) => {
   }
 });
 
-// GET /api/soundcloud/disconnect
-app.get('/api/soundcloud/disconnect', async (_req, res) => {
+// POST /api/soundcloud/disconnect
+app.post('/api/soundcloud/disconnect', async (_req, res) => {
   const config = await readSoundcloudConfig();
   await writeSoundcloudConfig({ client_id: config.client_id || '', client_secret: config.client_secret || '' });
   res.json({ ok: true });
@@ -1666,6 +1714,7 @@ app.post('/api/lastfm/credentials', async (req, res) => {
 app.get('/api/lastfm/auth-url', async (_req, res) => {
   const config = await readLastfmConfig();
   if (!config.api_key) return res.status(400).json({ error: 'No api_key configured' });
+  pendingLastfmAuth = Date.now() + 10 * 60 * 1000; // 10 min TTL
   const url = `http://www.last.fm/api/auth/?api_key=${encodeURIComponent(config.api_key)}`
     + `&cb=${encodeURIComponent('http://127.0.0.1:3123/auth/lastfm/callback')}`;
   res.json({ url });
@@ -1675,6 +1724,8 @@ app.get('/api/lastfm/auth-url', async (_req, res) => {
 app.get('/auth/lastfm/callback', async (req, res) => {
   const { token } = req.query;
   if (!token) return res.status(400).send('No token');
+  if (!pendingLastfmAuth || Date.now() > pendingLastfmAuth) return res.status(400).send('No pending auth flow');
+  pendingLastfmAuth = 0;
   const config = await readLastfmConfig();
   if (!config.api_key || !config.shared_secret) return res.status(400).send('Last.fm credentials not configured');
   try {
@@ -1772,8 +1823,8 @@ app.post('/api/lastfm/now-playing', async (req, res) => {
   }
 });
 
-// GET /api/lastfm/disconnect — clear session_key
-app.get('/api/lastfm/disconnect', async (_req, res) => {
+// POST /api/lastfm/disconnect — clear session_key
+app.post('/api/lastfm/disconnect', async (_req, res) => {
   const config = await readLastfmConfig();
   await writeLastfmConfig({ api_key: config.api_key || '', shared_secret: config.shared_secret || '' });
   res.json({ ok: true });
@@ -1814,7 +1865,8 @@ app.get('/api/decode', async (req, res) => {
     res.setHeader('Content-Length', pcm.length);
     res.send(pcm);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[decode]', err);
+    res.status(500).json({ error: 'Audio decode failed' });
   }
 });
 
@@ -1823,44 +1875,44 @@ const FAVS_FILE = path.join(TLP_DIR, 'favorites.json');
 const FAVS_BACKUP_DIR = path.join(TLP_DIR, 'favorites_backups');
 const MAX_BACKUPS = 20;
 
-function readFavsFile() {
-  try { return JSON.parse(fs.readFileSync(FAVS_FILE, 'utf8')); }
+async function readFavsFile() {
+  try { return JSON.parse(await fs.promises.readFile(FAVS_FILE, 'utf8')); }
   catch (_) { return []; }
 }
 
-function writeFavsFile(arr) {
-  try { fs.mkdirSync(TLP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
+async function writeFavsFile(arr) {
+  try { await fs.promises.mkdir(TLP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
   // Rotate backup before overwriting
   try {
-    const existing = fs.readFileSync(FAVS_FILE, 'utf8');
+    const existing = await fs.promises.readFile(FAVS_FILE, 'utf8');
     const parsed = JSON.parse(existing);
     if (parsed.length > 0) {
-      try { fs.mkdirSync(FAVS_BACKUP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
+      try { await fs.promises.mkdir(FAVS_BACKUP_DIR, { recursive: true, mode: 0o700 }); } catch (_) {}
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fs.writeFileSync(path.join(FAVS_BACKUP_DIR, `favorites-${stamp}.json`), existing, { mode: 0o600 });
+      await fs.promises.writeFile(path.join(FAVS_BACKUP_DIR, `favorites-${stamp}.json`), existing, { mode: 0o600 });
       // Prune old backups
-      const files = fs.readdirSync(FAVS_BACKUP_DIR).filter(f => f.startsWith('favorites-')).sort();
+      const files = (await fs.promises.readdir(FAVS_BACKUP_DIR)).filter(f => f.startsWith('favorites-')).sort();
       while (files.length > MAX_BACKUPS) {
-        fs.unlinkSync(path.join(FAVS_BACKUP_DIR, files.shift()));
+        await fs.promises.unlink(path.join(FAVS_BACKUP_DIR, files.shift()));
       }
     }
   } catch (_) {}
-  fs.writeFileSync(FAVS_FILE, JSON.stringify(arr, null, 2), { mode: 0o600 });
+  await fs.promises.writeFile(FAVS_FILE, JSON.stringify(arr, null, 2), { mode: 0o600 });
 }
 
-app.get('/api/favorites', (_req, res) => {
-  res.json(readFavsFile());
+app.get('/api/favorites', async (_req, res) => {
+  res.json(await readFavsFile());
 });
 
-app.post('/api/favorites', (req, res) => {
+app.post('/api/favorites', async (req, res) => {
   const arr = req.body;
   if (!Array.isArray(arr)) return res.status(400).json({ error: 'expected array' });
-  const existing = readFavsFile();
+  const existing = await readFavsFile();
   // Safety: refuse to wipe a non-empty file with an empty save
   if (existing.length > 0 && arr.length === 0) {
     return res.status(409).json({ error: 'refusing to delete all favorites', existing: existing.length });
   }
-  writeFavsFile(arr);
+  await writeFavsFile(arr);
   res.json({ ok: true, count: arr.length });
 });
 

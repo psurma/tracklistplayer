@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.20.0] - 2026-04-13
+
+### Security
+- **Origin guard**: API requests from non-localhost origins are now blocked, preventing cross-origin CSRF attacks
+- **Security headers**: added helmet middleware (CSP, X-Content-Type-Options, X-Frame-Options, etc.)
+- **POST for state changes**: disconnect and token-refresh endpoints now require POST (prevents `<img>` tag / prefetch attacks)
+- **SoundCloud stream ID validation**: `/api/soundcloud/stream/:id` now rejects non-numeric IDs
+- **Last.fm CSRF protection**: callback now requires a pending auth flow initiated by the app
+- **Error message sanitization**: filesystem error responses no longer leak internal paths
+- **Dependency audit**: resolved all npm audit vulnerabilities (0 remaining)
+- **Removed unused `cors` dependency**
+
+### Fixed
+- **Async file I/O**: `/file` endpoint and favorites persistence now use non-blocking `fs.promises` instead of sync I/O
+- **CUE parser async**: `parseCueFile` converted from `fs.readFileSync` to `fs.promises.readFile`
+- **Dead code**: removed redundant ternary in Spotify track rendering, removed duplicate `formatTimeShort` function
+- **Stale cache-bust versions**: script tags in index.html now match package.json version
+- **Waveform loop**: scrubber `tick()` skips redundant redraws when audio time hasn't changed (reduces idle CPU)
+- **Cache eviction**: all in-memory caches now have max-size limits (BoundedMap) to prevent unbounded memory growth
+- **Token refresh logging**: auth token refresh failures are now logged instead of silently swallowed
+- **Index scan logging**: directory read failures during indexing are now logged
+
+### Changed
+- **Media keys via IPC**: Electron media key handlers now use IPC messages instead of `executeJavaScript`, following Electron security best practices
+- **Shared PATH env**: extracted `SPAWN_ENV` to `lib/env.js`, shared between server and Electron main process
+- **SoundCloud track rendering**: deduplicated into shared `createSoundcloudTrackEl()` helper
+- **Audio input config**: preferred audio input device now read from `~/.tracklistplayer/audio-settings.json` instead of hardcoded
+
+## [1.19.3] - 2026-04-07
+
+### Added
+- **Expand/collapse tracklist**: click any album header in the sidebar to expand or collapse its tracks
+- Expand-all and collapse-all buttons in the filter bar for quick toggling of all albums
+- Visual arrow indicator on album headers showing expand/collapse state
+- **Expand/collapse lower pane**: arrow button in the NFO/tracklist pane header to toggle between full-height and normal view
+- **Maximize/minimize sidebar panels**: arrow buttons on the panel resize bar to maximize the tracklist or folder browser; double-click to reset to default split
+
+### Fixed
+- **Graceful error handling**: EIO/ENOENT/EPERM errors (e.g. external drive disconnects) are now caught and logged instead of crashing the app; other uncaught exceptions show a non-fatal warning dialog
+
 ## [1.19.2] - 2026-04-02
 
 ### Fixed
