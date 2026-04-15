@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1] - 2026-04-15
+
+### Fixed
+- **CSP blocking Spotify SDK**: added `frameSrc` for `https://sdk.scdn.co` to Helmet CSP, fixing `ERR_BLOCKED_BY_CSP` that prevented the app from loading in Electron
+- **CSP WebSocket sources**: added `wss://dealer.spotify.com` and `wss://*.spotify.com` to `connectSrc` for Spotify SDK real-time connections
+- **CSP SoundCloud media**: added SoundCloud CDN domains to `mediaSrc` for audio streaming
+
 ## [1.22.0] - 2026-04-13
 
 ### Changed

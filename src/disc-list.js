@@ -167,19 +167,25 @@ function makeFolderItem(dir, name, mtime, activeNames) {
   return item;
 }
 
-function insertFolderItemSorted(dir, name, mtime, activeNames) {
-  const item = makeFolderItem(dir, name, mtime, activeNames);
-  const existing = [...folderBrowser.querySelectorAll('.folder-item')];
-  if (folderSort === 'date') {
-    const ref = existing.find((el) => mtime > Number(el.dataset.mtime || 0));
-    ref ? folderBrowser.insertBefore(item, ref) : folderBrowser.appendChild(item);
-  } else {
-    const ref = existing.find((el) =>
-      name.localeCompare(el.dataset.name || '', undefined, { sensitivity: 'base' }) < 0
-    );
-    ref ? folderBrowser.insertBefore(item, ref) : folderBrowser.appendChild(item);
+function appendFolderItems(dir, entries, activeNames) {
+  const frag = document.createDocumentFragment();
+  for (const entry of entries) {
+    frag.appendChild(makeFolderItem(dir, entry.name, entry.mtime, activeNames));
   }
-  return item;
+  folderBrowser.appendChild(frag);
+}
+
+function sortFolderItems() {
+  const items = [...folderBrowser.querySelectorAll('.folder-item')];
+  if (!items.length) return;
+  if (folderSort === 'date') {
+    items.sort((a, b) => Number(b.dataset.mtime || 0) - Number(a.dataset.mtime || 0));
+  } else {
+    items.sort((a, b) => (a.dataset.name || '').localeCompare(b.dataset.name || '', undefined, { sensitivity: 'base' }));
+  }
+  const frag = document.createDocumentFragment();
+  for (const item of items) frag.appendChild(item);
+  folderBrowser.appendChild(frag);
 }
 
 function renderFolderItems(dir, subdirs) {
@@ -210,6 +216,13 @@ async function loadFolderBrowser(dir, bust) {
     folderBrowser.innerHTML = '<div class="status-msg">Loading\u2026</div>';
     let metaDone = false;
     let parent = null;
+    let filterTimer = null;
+
+    const scheduleFilter = () => {
+      if (!filterTimer) {
+        filterTimer = setTimeout(() => { filterTimer = null; applyFilter(filterInput.value); }, 150);
+      }
+    };
 
     const url = `/api/ls-stream?dir=${encodeURIComponent(dir)}${bust ? '&bust=1' : ''}`;
     const source = new EventSource(url);
@@ -233,6 +246,7 @@ async function loadFolderBrowser(dir, bust) {
         } else {
           renderFolderItems(dir, lastSubdirs);
         }
+        clearTimeout(filterTimer);
         resolve();
         return;
       }
@@ -245,17 +259,28 @@ async function loadFolderBrowser(dir, bust) {
         return;
       }
 
+      // Batch of entries (preferred)
+      if (msg.type === 'entries') {
+        if (!metaDone) { folderBrowser.innerHTML = ''; metaDone = true; }
+        for (const item of msg.items) lastSubdirs.push(item);
+        appendFolderItems(dir, msg.items, activeNames);
+        return;
+      }
+
+      // Single entry (legacy/fallback)
       if (msg.type === 'entry') {
         if (!metaDone) { folderBrowser.innerHTML = ''; metaDone = true; }
         const entry = { name: msg.name, mtime: msg.mtime };
         lastSubdirs.push(entry);
-        insertFolderItemSorted(dir, msg.name, msg.mtime, activeNames);
-        applyFilter(filterInput.value);
+        appendFolderItems(dir, [entry], activeNames);
         return;
       }
 
       if (msg.type === 'done') {
         source.close();
+        clearTimeout(filterTimer);
+        sortFolderItems();
+        applyFilter(filterInput.value);
         if (!lastSubdirs.length && !parent) {
           folderBrowser.innerHTML = '<div class="status-msg">No subfolders.</div>';
         }
@@ -265,17 +290,100 @@ async function loadFolderBrowser(dir, bust) {
 
       if (msg.type === 'error') {
         source.close();
+        clearTimeout(filterTimer);
         folderBrowser.innerHTML = `<div class="status-msg" style="color:#c06060">${escapeHtml(msg.message)}</div>`;
         resolve();
       }
     };
 
-    source.onerror = () => { source.close(); resolve(); };
+    source.onerror = () => { source.close(); clearTimeout(filterTimer); resolve(); };
   });
 }
 
 // ── Disc list rendering ───────────────────────────────────────────────────────
 let _activeTrackEl = null;
+
+// Event delegation: single listener on discList handles all track/disc clicks
+discList.addEventListener('click', (e) => {
+  // Header collapse toggle
+  const header = e.target.closest('.disc-header');
+  if (header) {
+    const section = header.closest('.disc-section');
+    const discId = parseInt(section?.dataset.discId, 10);
+    if (isNaN(discId)) return;
+    const nowCollapsed = !state.collapsedDiscs.has(discId);
+    if (nowCollapsed) state.collapsedDiscs.add(discId);
+    else state.collapsedDiscs.delete(discId);
+    section.classList.toggle('disc-collapsed', nowCollapsed);
+    const toggle = section.querySelector('.disc-toggle');
+    if (toggle) toggle.textContent = nowCollapsed ? '\u25B6' : '\u25BC';
+    return;
+  }
+
+  const item = e.target.closest('.track-item');
+  if (!item) return;
+
+  const discId = parseInt(item.dataset.disc, 10);
+  const trackIdx = parseInt(item.dataset.track, 10);
+  const disc = state.discs.find((d) => d.id === discId);
+  if (!disc) return;
+
+  // Favorite button
+  const favBtn = e.target.closest('.fav-btn');
+  if (favBtn) {
+    e.stopPropagation();
+    if (trackIdx === -1) {
+      // Raw MP3 without tracks
+      const rawKey = favKey(disc.mp3File, 1);
+      if (state.favorites.has(rawKey)) {
+        state.favorites.delete(rawKey);
+        favBtn.classList.remove('fav-active');
+        favBtn.title = 'Add to favorites';
+      } else {
+        state.favorites.set(rawKey, {
+          mp3File: disc.mp3File, mp3Path: disc.mp3Path, dir: disc.dir || '',
+          trackNumber: 1, title: disc.albumTitle || disc.mp3File,
+          performer: disc.albumPerformer || '', albumTitle: disc.albumTitle || '',
+          startSeconds: 0,
+        });
+        favBtn.classList.add('fav-active');
+        favBtn.title = 'Remove from favorites';
+      }
+      saveFavorites();
+      if (currentDisc() && currentDisc().id === disc.id) {
+        npTitle.classList.toggle('is-fav', state.favorites.has(rawKey));
+      }
+      const favsPanel = document.getElementById('favs-panel');
+      if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
+    } else {
+      toggleFavorite(disc, trackIdx, favBtn);
+    }
+    return;
+  }
+
+  // Queue button
+  if (e.target.closest('.track-queue-btn')) {
+    e.stopPropagation();
+    addToQueue(disc, trackIdx);
+    return;
+  }
+
+  // Spotify save button
+  if (e.target.closest('.track-spotify-btn')) {
+    e.stopPropagation();
+    const track = disc.tracks[trackIdx];
+    if (_openSpotifySaveModal && track) _openSpotifySaveModal(track.title, track.performer || disc.albumPerformer);
+    return;
+  }
+
+  // Track click (play)
+  if (trackIdx === -1) {
+    if (_loadDisc) _loadDisc(disc);
+    audio.play().catch(() => {});
+  } else {
+    if (_playDiscAtTrack) _playDiscAtTrack(disc, trackIdx);
+  }
+});
 
 function renderDiscList() {
   _activeTrackEl = null;
@@ -290,6 +398,7 @@ function renderDiscList() {
   for (const disc of state.discs) {
     const section = document.createElement('div');
     section.className = 'disc-section';
+    section.dataset.discId = disc.id;
 
     const isCollapsed = state.collapsedDiscs.has(disc.id);
     if (isCollapsed) section.classList.add('disc-collapsed');
@@ -301,13 +410,6 @@ function renderDiscList() {
     const arrow = `<span class="disc-toggle">${isCollapsed ? '\u25B6' : '\u25BC'}</span>`;
     header.innerHTML = `${arrow}${escapeHtml(titleText)}${performer}`;
     header.style.cursor = 'pointer';
-    header.addEventListener('click', () => {
-      const nowCollapsed = !state.collapsedDiscs.has(disc.id);
-      if (nowCollapsed) state.collapsedDiscs.add(disc.id);
-      else state.collapsedDiscs.delete(disc.id);
-      section.classList.toggle('disc-collapsed', nowCollapsed);
-      section.querySelector('.disc-toggle').textContent = nowCollapsed ? '\u25B6' : '\u25BC';
-    });
     section.appendChild(header);
 
     if (disc.mp3Path && _getDiscProgress) {
@@ -331,100 +433,41 @@ function renderDiscList() {
     }
 
     if (!disc.tracks.length) {
-      const item = document.createElement('div');
-      item.className = 'track-item';
-      item.dataset.disc = disc.id;
-      item.dataset.track = -1;
       const rawKey = favKey(disc.mp3File, 1);
       const rawIsFav = state.favorites.has(rawKey);
-      item.innerHTML = `
-        <span class="track-num"></span>
-        <span class="track-info">
-          <div class="track-title" style="color:var(--text-dim)">${escapeHtml(disc.mp3File)}</div>
-        </span>
-        <button class="fav-btn${rawIsFav ? ' fav-active' : ''}" data-key="${escapeHtml(rawKey)}" title="${rawIsFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
-      `;
-      item.addEventListener('click', (e) => {
-        if (e.target.closest('.fav-btn')) return;
-        if (_loadDisc) _loadDisc(disc);
-        audio.play().catch(() => {});
-      });
-      item.querySelector('.fav-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        const starEl = e.currentTarget;
-        if (state.favorites.has(rawKey)) {
-          state.favorites.delete(rawKey);
-          starEl.classList.remove('fav-active');
-          starEl.title = 'Add to favorites';
-        } else {
-          state.favorites.set(rawKey, {
-            mp3File: disc.mp3File, mp3Path: disc.mp3Path, dir: disc.dir || '',
-            trackNumber: 1, title: disc.albumTitle || disc.mp3File,
-            performer: disc.albumPerformer || '', albumTitle: disc.albumTitle || '',
-            startSeconds: 0,
-          });
-          starEl.classList.add('fav-active');
-          starEl.title = 'Remove from favorites';
-        }
-        saveFavorites();
-        if (currentDisc() && currentDisc().id === disc.id) {
-          npTitle.classList.toggle('is-fav', state.favorites.has(rawKey));
-        }
-        const favsPanel = document.getElementById('favs-panel');
-        if (favsPanel && !favsPanel.classList.contains('hidden')) renderFavsList();
-      });
-      section.appendChild(item);
+      section.insertAdjacentHTML('beforeend', `
+        <div class="track-item" data-disc="${disc.id}" data-track="-1">
+          <span class="track-num"></span>
+          <span class="track-info">
+            <div class="track-title" style="color:var(--text-dim)">${escapeHtml(disc.mp3File)}</div>
+          </span>
+          <button class="fav-btn${rawIsFav ? ' fav-active' : ''}" data-key="${escapeHtml(rawKey)}" title="${rawIsFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
+        </div>`);
       frag.appendChild(section);
       continue;
     }
 
+    // Build all track items as HTML string for faster DOM insertion
+    const trackHtmlParts = [];
     for (let i = 0; i < disc.tracks.length; i++) {
       const track = disc.tracks[i];
-      const item = document.createElement('div');
-      item.className = 'track-item';
-      item.dataset.disc = disc.id;
-      item.dataset.track = i;
-      item.dataset.title = (track.title || '').toLowerCase();
-      item.dataset.performer = (track.performer || disc.albumPerformer || '').toLowerCase();
-
       const isFav = state.favorites.has(favKey(disc.mp3File, track.track));
-
-      item.innerHTML = `
-        <span class="track-num">${String(track.track).padStart(2, '0')}</span>
-        <span class="track-info">
-          <div class="track-title">${escapeHtml(track.title || '(unknown)')}</div>
-          ${track.performer ? `<div class="track-performer">${escapeHtml(track.performer)}</div>` : ''}
-        </span>
-        <span class="track-actions">
-          <button class="track-action-btn track-queue-btn" title="Add to queue">+</button>
-          <button class="track-action-btn track-spotify-btn" title="Save to Spotify">&#9834;</button>
-        </span>
-        <button class="fav-btn${isFav ? ' fav-active' : ''}" data-key="${escapeHtml(favKey(disc.mp3File, track.track))}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
-        <span class="track-time">${formatTime(track.startSeconds)}</span>
-      `;
-
-      item.addEventListener('click', (e) => {
-        if (e.target.closest('.fav-btn') || e.target.closest('.track-action-btn')) return;
-        if (_playDiscAtTrack) _playDiscAtTrack(disc, i);
-      });
-
-      item.querySelector('.fav-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleFavorite(disc, i, e.currentTarget);
-      });
-
-      item.querySelector('.track-queue-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        addToQueue(disc, i);
-      });
-
-      item.querySelector('.track-spotify-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (_openSpotifySaveModal) _openSpotifySaveModal(track.title, track.performer || disc.albumPerformer);
-      });
-
-      section.appendChild(item);
+      trackHtmlParts.push(`
+        <div class="track-item" data-disc="${disc.id}" data-track="${i}" data-title="${escapeHtml((track.title || '').toLowerCase())}" data-performer="${escapeHtml((track.performer || disc.albumPerformer || '').toLowerCase())}">
+          <span class="track-num">${String(track.track).padStart(2, '0')}</span>
+          <span class="track-info">
+            <div class="track-title">${escapeHtml(track.title || '(unknown)')}</div>
+            ${track.performer ? `<div class="track-performer">${escapeHtml(track.performer)}</div>` : ''}
+          </span>
+          <span class="track-actions">
+            <button class="track-action-btn track-queue-btn" title="Add to queue">+</button>
+            <button class="track-action-btn track-spotify-btn" title="Save to Spotify">&#9834;</button>
+          </span>
+          <button class="fav-btn${isFav ? ' fav-active' : ''}" data-key="${escapeHtml(favKey(disc.mp3File, track.track))}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">&#9733;</button>
+          <span class="track-time">${formatTime(track.startSeconds)}</span>
+        </div>`);
     }
+    section.insertAdjacentHTML('beforeend', trackHtmlParts.join(''));
 
     frag.appendChild(section);
   }

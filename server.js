@@ -12,9 +12,10 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "https://sdk.scdn.co"],
-      connectSrc: ["'self'", "https://api.spotify.com", "https://sdk.scdn.co"],
+      connectSrc: ["'self'", "https://api.spotify.com", "https://sdk.scdn.co", "wss://dealer.spotify.com", "wss://*.spotify.com"],
+      frameSrc: ["https://sdk.scdn.co"],
       imgSrc: ["'self'", "data:", "https://i.scdn.co", "https://*.sndcdn.com", "https://coverartarchive.org", "https://*.archive.org"],
-      mediaSrc: ["'self'", "blob:"],
+      mediaSrc: ["'self'", "blob:", "https://cf-media.sndcdn.com", "https://*.sndcdn.com"],
       styleSrc: ["'self'", "'unsafe-inline'"],
     },
   },

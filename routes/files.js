@@ -86,7 +86,29 @@ router.get('/api/ls-stream', async (req, res) => {
     const candidates = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
     const collected = [];
 
-    const LIMIT = 8;
+    // Batch entries and flush periodically to avoid per-entry overhead on network drives
+    const LIMIT = 16;
+    let pendingBatch = [];
+    const BATCH_INTERVAL = 80; // ms
+    let batchTimer = null;
+
+    function flushBatch() {
+      if (pendingBatch.length === 0) return;
+      send({ type: 'entries', items: pendingBatch });
+      pendingBatch = [];
+    }
+
+    function queueEntry(entry) {
+      collected.push(entry);
+      pendingBatch.push(entry);
+      if (pendingBatch.length >= 50) {
+        clearTimeout(batchTimer);
+        flushBatch();
+      } else if (!batchTimer) {
+        batchTimer = setTimeout(() => { batchTimer = null; flushBatch(); }, BATCH_INTERVAL);
+      }
+    }
+
     let ci = 0;
     async function worker() {
       while (ci < candidates.length) {
@@ -97,12 +119,12 @@ router.get('/api/ls-stream', async (req, res) => {
           fs.promises.stat(subPath).catch(() => null),
         ]);
         if (!music) continue;
-        const entry = { name: e.name, mtime: st ? st.mtimeMs : 0 };
-        collected.push(entry);
-        send({ type: 'entry', ...entry });
+        queueEntry({ name: e.name, mtime: st ? st.mtimeMs : 0 });
       }
     }
     await Promise.all(Array.from({ length: Math.min(LIMIT, candidates.length) }, worker));
+    clearTimeout(batchTimer);
+    flushBatch();
 
     lsCache.set(dir, { dir, parent, subdirs: collected });
     send({ type: 'done' });
