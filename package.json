@@ -1,6 +1,6 @@
 {
   "name": "tracklistplayer",
-  "version": "1.22.1",
+  "version": "1.22.2",
   "description": "DJ mix MP3 player with CUE sheet track detection and Spotify search",
   "main": "electron/main.js",
   "scripts": {
@@ -64,6 +64,7 @@
     "files": [
       "electron/**/*",
       "lib/**/*",
+      "routes/**/*",
       "public/**/*",
       "server.js",
       "package.json"

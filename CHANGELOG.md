@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.22.2] - 2026-04-16
+
+### Fixed
+- **CUE file encoding**: auto-detect Windows-1252 encoded CUE files instead of assuming UTF-8, fixing garbled characters (e.g. smart quotes showing as `�`)
+- **Packaged app blank screen**: added `routes/**/*` to electron-builder files list so route modules are included in the built app
+
 ## [1.22.1] - 2026-04-15
 
 ### Fixed
