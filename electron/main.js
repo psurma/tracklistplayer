@@ -113,7 +113,10 @@ function createWindow() {
 
   // Prevent navigation away from the app
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('http://localhost:3123')) {
+    let parsed;
+    try { parsed = new URL(url); } catch (_) { event.preventDefault(); return; }
+    const internal = parsed.host === 'localhost:3123' || parsed.host === '127.0.0.1:3123';
+    if (!internal) {
       event.preventDefault();
       shell.openExternal(url);
     }
@@ -162,12 +165,51 @@ app.on('will-quit', () => {
   if (server && server.close) server.close();
 });
 
+// Validate reveal-in-finder against the configured library roots so a
+// compromised renderer cannot cause Finder to expose arbitrary files.
+function loadLibraryRoots() {
+  try {
+    const file = path.join(app.getPath('home'), '.tracklistplayer', 'library.json');
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) { return []; }
+}
+function isUnderAny(target, roots) {
+  if (typeof target !== 'string' || !target) return false;
+  const resolved = path.resolve(target);
+  return roots.some((root) => {
+    const r = path.resolve(root);
+    return resolved === r || resolved.startsWith(r + path.sep);
+  });
+}
+
 ipcMain.handle('reveal-in-finder', (_event, filePath) => {
+  if (!isUnderAny(filePath, loadLibraryRoots())) {
+    console.warn('[reveal-in-finder] rejected path outside library roots:', filePath);
+    return;
+  }
   shell.showItemInFolder(filePath);
 });
 
+// Allowlist of external hostnames the renderer may request the OS browser to open.
+const OPEN_EXTERNAL_HOSTS = new Set([
+  'open.spotify.com', 'spotify.com', 'www.spotify.com', 'accounts.spotify.com',
+  'soundcloud.com', 'www.soundcloud.com', 'on.soundcloud.com',
+  'www.last.fm', 'last.fm', 'secure.last.fm',
+  'www.mixesdb.com', 'mixesdb.com',
+  'musicbrainz.org', 'coverartarchive.org',
+  'github.com', 'www.github.com',
+]);
+
 ipcMain.handle('open-external', (_event, url) => {
-  if (/^https?:\/\//.test(url)) shell.openExternal(url);
+  if (typeof url !== 'string') return;
+  let parsed;
+  try { parsed = new URL(url); } catch (_) { return; }
+  if (parsed.protocol !== 'https:') return;
+  if (!OPEN_EXTERNAL_HOSTS.has(parsed.hostname)) {
+    console.warn('[open-external] blocked host:', parsed.hostname);
+    return;
+  }
+  shell.openExternal(parsed.toString());
 });
 
 ipcMain.handle('pick-directory', async () => {

@@ -7,6 +7,7 @@ const path = require('path');
 const { serverEscapeHtml } = require('../lib/helpers');
 const { getPendingLastfmAuth, setPendingLastfmAuth } = require('../lib/oauth');
 const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
+const { fetchWithTimeout } = require('../lib/http');
 
 const lastfmConfig = createConfigStore(path.join(TLP_DIR, 'lastfm.json'));
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
@@ -70,7 +71,7 @@ router.get('/auth/lastfm/callback', async (req, res) => {
     params.api_sig = lastfmApiSig(params, config.shared_secret);
     params.format = 'json';
     const qs = new URLSearchParams(params).toString();
-    const lfmRes = await fetch(`${LASTFM_API_URL}?${qs}`);
+    const lfmRes = await fetchWithTimeout(`${LASTFM_API_URL}?${qs}`, {}, 15000);
     if (!lfmRes.ok) {
       const err = await lfmRes.text();
       return res.send(`<!DOCTYPE html><html><head><title>Last.fm Auth</title></head><body style="font-family:sans-serif;background:#1a1a2e;color:#fff;padding:40px"><h2 style="color:#e05050">Session exchange failed</h2><pre>${serverEscapeHtml(err)}</pre></body></html>`);
@@ -91,28 +92,35 @@ router.get('/auth/lastfm/callback', async (req, res) => {
   }
 });
 
+// Shared helper for the two scrobble endpoints (DRY)
+async function callLastfmMethod(method, fields, config) {
+  const params = {
+    method,
+    api_key: config.api_key,
+    sk: config.session_key,
+    ...fields,
+  };
+  params.api_sig = lastfmApiSig(params, config.shared_secret);
+  params.format = 'json';
+  return fetchWithTimeout(LASTFM_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  }, 10000);
+}
+
 // POST /api/lastfm/scrobble — { artist, track, timestamp, album }
 router.post('/api/lastfm/scrobble', requireAuth(lastfmConfig, 'session_key'), async (req, res) => {
   const { artist, track, timestamp, album } = req.body || {};
   if (!artist || !track) return res.status(400).json({ error: 'artist and track required' });
-  const config = req.serviceConfig;
   try {
-    const params = {
-      method: 'track.scrobble',
-      api_key: config.api_key,
-      sk: config.session_key,
-      artist: artist,
-      track: track,
+    const fields = {
+      artist,
+      track,
       timestamp: String(timestamp || Math.floor(Date.now() / 1000)),
     };
-    if (album) params.album = album;
-    params.api_sig = lastfmApiSig(params, config.shared_secret);
-    params.format = 'json';
-    const lfmRes = await fetch(LASTFM_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
+    if (album) fields.album = album;
+    const lfmRes = await callLastfmMethod('track.scrobble', fields, req.serviceConfig);
     if (!lfmRes.ok) {
       const err = await lfmRes.text();
       return res.status(lfmRes.status).json({ error: `Last.fm API error: ${err}` });
@@ -127,23 +135,10 @@ router.post('/api/lastfm/scrobble', requireAuth(lastfmConfig, 'session_key'), as
 router.post('/api/lastfm/now-playing', requireAuth(lastfmConfig, 'session_key'), async (req, res) => {
   const { artist, track, album } = req.body || {};
   if (!artist || !track) return res.status(400).json({ error: 'artist and track required' });
-  const config = req.serviceConfig;
   try {
-    const params = {
-      method: 'track.updateNowPlaying',
-      api_key: config.api_key,
-      sk: config.session_key,
-      artist: artist,
-      track: track,
-    };
-    if (album) params.album = album;
-    params.api_sig = lastfmApiSig(params, config.shared_secret);
-    params.format = 'json';
-    const lfmRes = await fetch(LASTFM_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(params).toString(),
-    });
+    const fields = { artist, track };
+    if (album) fields.album = album;
+    const lfmRes = await callLastfmMethod('track.updateNowPlaying', fields, req.serviceConfig);
     if (!lfmRes.ok) {
       const err = await lfmRes.text();
       return res.status(lfmRes.status).json({ error: `Last.fm API error: ${err}` });

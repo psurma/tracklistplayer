@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.23.0] - 2026-05-02
+
+### Security
+- **Library allowlist hardening**: `POST /api/library` now validates the folder is an absolute path under `$HOME` and is an existing directory, closing an arbitrary-path-registration bypass
+- **DNS rebinding defense**: server now rejects requests whose `Host` header is not `127.0.0.1:3123` or `localhost:3123`; origin guard extended to all routes (including `/file` and `/auth/*`)
+- **SoundCloud SSRF fix**: `/api/soundcloud/liked?next_href=` now requires `URL(href).hostname === 'api.soundcloud.com'`; the stream proxy refuses upstream hosts outside SoundCloud's CDN
+- **CSP**: removed `'unsafe-inline'` from `script-src` (no inline scripts in the bundle); added `script-src-elem` and `X-Content-Type-Options: nosniff` on file/NFO responses
+- **Electron IPC validation**: `reveal-in-finder` rejects paths outside library roots; `open-external` is `https:`-only and gated by an explicit host allowlist
+- **Decode bounds**: `/api/decode` capped at 600 s to prevent ffmpeg memory blowup
+- **Dependency bump**: `npm audit fix` for `@xmldom/xmldom` (XML injection / DoS)
+
+### Reliability
+- **Network timeouts everywhere**: every outbound `fetch()` (Spotify, SoundCloud, Last.fm, MixesDB, MusicBrainz, Cover Art Archive) now uses `fetchWithTimeout` (10–15 s); every `ffmpeg` invocation uses `runWithTimeout` with SIGKILL on overrun
+- **SSE worker resilience**: `/api/ls-stream` workers no longer pin indefinitely on stalled SMB mounts — per-entry 4 s timeout, abort on client disconnect, surfaces `stalled` events to the UI
+- **Range request hardening**: `/file` validates Range header (rejects `NaN`/out-of-bounds with 416), tears down streams on client disconnect
+- **SoundCloud stream proxy**: 30 s mid-body inactivity watchdog so a stalled CDN can no longer hang the response forever
+- **Mid-playback reauth**: Spotify Web Playback SDK now refreshes the token and re-initializes on `authentication_error` instead of failing silently
+- **OAuth refresh consolidated**: extracted shared `refreshOAuthToken` helper; eliminates near-duplicate logic in Spotify/SoundCloud routes
+
+### Fixed
+- **Dir-browser modal regression**: `/api/ls` now performs its own scan (instead of returning 204 with no JSON), defaults `dir` to `$HOME` so opening the modal cold no longer hits a 403
+- **Artwork content-type**: extracted embedded art is now sniffed (`PNG` magic bytes) and served with the correct MIME instead of always `image/jpeg`
+- **Empty-catch noise**: `try { catch (_) {} }` swallowing replaced with `lib/logger` so config-write failures, OAuth refresh errors, and stream errors are visible in the console
+
+### Removed
+- `public/app.js` (4707-line dead pre-refactor monolith) — bundle now ships only `app.bundle.js`
+
+### Added
+- `lib/logger.js`, `lib/http.js`, `lib/refresh.js`, `lib/spawnUtil.js` — small shared helpers
+- Tests for `validateLibraryFolder`, `fetchWithTimeout`, `refreshOAuthToken`, `withTimeout` (58 unit tests pass)
+
 ## [1.22.2] - 2026-04-16
 
 ### Fixed

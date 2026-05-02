@@ -41,11 +41,14 @@ function renderDirFavs() {
 }
 
 async function browseDir(dir) {
-  dirModalCwd.textContent = dir;
+  dirModalCwd.textContent = dir || '(home)';
   try {
-    const res = await fetch(`/api/ls?dir=${encodeURIComponent(dir)}`);
+    const url = dir ? `/api/ls?dir=${encodeURIComponent(dir)}` : '/api/ls';
+    const res = await fetch(url);
     if (!res.ok) throw new Error('ls failed');
-    const { parent, subdirs } = await res.json();
+    const { parent, subdirs, dir: resolvedDir } = await res.json();
+    if (resolvedDir && resolvedDir !== dir) dirModalCwd.textContent = resolvedDir;
+    dir = resolvedDir || dir;
     let html = '';
     if (parent) html += `<div class="dir-entry dir-entry-up" data-path="${escapeHtml(parent)}"><span class="dir-entry-icon">&#x2191;</span> ..</div>`;
     const sorted = (subdirs || []).map(normEntryFallback).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -68,9 +71,10 @@ function selectDirPath(p) {
 }
 
 async function openDirModal(startDir) {
-  const dir = startDir || dirInput.value.trim() || (getDirFavs()[0] || '/');
+  // Empty string => server defaults to $HOME (avoids the old '/' which now 403s).
+  const dir = startDir || dirInput.value.trim() || getDirFavs()[0] || '';
   dirModalPath = dir;
-  dirModalSelected.textContent = dir;
+  dirModalSelected.textContent = dir || '(home)';
   dirModal.classList.remove('hidden');
   await browseDir(dir);
 }

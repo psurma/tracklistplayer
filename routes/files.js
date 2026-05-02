@@ -4,14 +4,30 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
-const { BoundedMap, AUDIO_FILE_EXTS, resolveAndValidate, hasMusic } = require('../lib/helpers');
+const { BoundedMap, AUDIO_FILE_EXTS, resolveAndValidate, hasMusic, withTimeout } = require('../lib/helpers');
 const { readLibrary } = require('./library');
 const { findCueMp3Pairs } = require('../lib/cueParser');
+const { logError, logWarn } = require('../lib/logger');
 
 // Session-scoped caches for directory listings and scans
 const lsCache   = new BoundedMap(200);
 const scanCache = new BoundedMap(200);
+
+// Per-entry timeout for stat/hasMusic when listing directories. On a stalled
+// SMB mount this lets the SSE worker pool keep moving instead of pinning all
+// 16 workers indefinitely on one bad subdir.
+const ENTRY_TIMEOUT_MS = 4000;
+
+// Restrict directory-browser endpoints to paths under the user's home dir.
+// Stronger than nothing while keeping the dir-picker UX flexible (the user
+// may want to add a folder that isn't yet a library root).
+function isUnderHome(p) {
+  const home = path.resolve(os.homedir());
+  const r = path.resolve(p);
+  return r === home || r.startsWith(home + path.sep);
+}
 
 // GET /api/scan?dir=<absolute path>&bust=1
 router.get('/api/scan', async (req, res) => {
@@ -46,30 +62,70 @@ router.get('/api/scan', async (req, res) => {
     scanCache.set(dir, result);
     return res.json(result);
   } catch (err) {
-    console.error('[scan]', err);
+    logError('scan', err);
     return res.status(500).json({ error: 'Failed to scan directory' });
   }
 });
 
 // GET /api/ls?dir=<path>&bust=1
+// Returns the immediate music-bearing subdirectories of `dir` as JSON. If
+// `dir` is omitted, defaults to the user's home directory so the dir-browser
+// modal can open without a known starting path.
 router.get('/api/ls', async (req, res) => {
-  if (!req.query.dir) return res.status(400).json({ error: 'dir required' });
-  const dir = path.resolve(req.query.dir);
+  const dir = req.query.dir ? path.resolve(req.query.dir) : path.resolve(os.homedir());
+  if (!isUnderHome(dir)) return res.status(403).json({ error: 'Forbidden' });
   if (!req.query.bust && lsCache.has(dir)) return res.json(lsCache.get(dir));
-  return res.status(204).end();
+
+  const parent = path.dirname(dir) !== dir ? path.dirname(dir) : null;
+  let entries;
+  try {
+    entries = await withTimeout(
+      fs.promises.readdir(dir, { withFileTypes: true }),
+      10000,
+      null
+    );
+  } catch (err) {
+    return res.status(404).json({ error: 'Cannot read directory', detail: err.message });
+  }
+  if (!entries) return res.status(504).json({ error: 'Directory read timed out' });
+
+  const candidates = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
+  const results = [];
+  let stalled = false;
+  for (const e of candidates) {
+    const subPath = path.join(dir, e.name);
+    const [music, st] = await Promise.all([
+      withTimeout(hasMusic(subPath), 4000, null),
+      withTimeout(fs.promises.stat(subPath).catch(() => null), 4000, null),
+    ]);
+    if (music === null) { stalled = true; continue; }
+    if (!music) continue;
+    results.push({ name: e.name, mtime: st ? st.mtimeMs : 0 });
+  }
+  const payload = { dir, parent, subdirs: results, ...(stalled ? { stalled: true } : {}) };
+  // Don't cache incomplete results — next call should retry the stalled dirs.
+  if (!stalled) lsCache.set(dir, payload);
+  res.json(payload);
 });
 
 // GET /api/ls-stream?dir=<path>  — SSE stream
 router.get('/api/ls-stream', async (req, res) => {
   if (!req.query.dir) { res.status(400).end(); return; }
   const dir = path.resolve(req.query.dir);
+  if (!isUnderHome(dir)) { res.status(403).end(); return; }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+
+  const send = (obj) => {
+    if (aborted || res.writableEnded) return;
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  };
 
   // Fast path — already cached
   if (!req.query.bust && lsCache.has(dir)) {
@@ -82,7 +138,16 @@ router.get('/api/ls-stream', async (req, res) => {
   send({ type: 'meta', parent });
 
   try {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    const entries = await withTimeout(
+      fs.promises.readdir(dir, { withFileTypes: true }),
+      ENTRY_TIMEOUT_MS * 2,
+      null
+    );
+    if (!entries) {
+      send({ type: 'error', message: 'Directory read timed out (network drive may be slow)' });
+      res.end();
+      return;
+    }
     const candidates = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
     const collected = [];
 
@@ -91,6 +156,7 @@ router.get('/api/ls-stream', async (req, res) => {
     let pendingBatch = [];
     const BATCH_INTERVAL = 80; // ms
     let batchTimer = null;
+    let stalledReported = false;
 
     function flushBatch() {
       if (pendingBatch.length === 0) return;
@@ -103,6 +169,7 @@ router.get('/api/ls-stream', async (req, res) => {
       pendingBatch.push(entry);
       if (pendingBatch.length >= 50) {
         clearTimeout(batchTimer);
+        batchTimer = null;
         flushBatch();
       } else if (!batchTimer) {
         batchTimer = setTimeout(() => { batchTimer = null; flushBatch(); }, BATCH_INTERVAL);
@@ -111,13 +178,20 @@ router.get('/api/ls-stream', async (req, res) => {
 
     let ci = 0;
     async function worker() {
-      while (ci < candidates.length) {
+      while (ci < candidates.length && !aborted) {
         const e = candidates[ci++];
         const subPath = path.join(dir, e.name);
         const [music, st] = await Promise.all([
-          hasMusic(subPath),
-          fs.promises.stat(subPath).catch(() => null),
+          withTimeout(hasMusic(subPath), ENTRY_TIMEOUT_MS, null),
+          withTimeout(fs.promises.stat(subPath).catch(() => null), ENTRY_TIMEOUT_MS, null),
         ]);
+        if (music === null || st === null) {
+          if (!stalledReported) {
+            stalledReported = true;
+            send({ type: 'stalled', name: e.name });
+          }
+          continue;
+        }
         if (!music) continue;
         queueEntry({ name: e.name, mtime: st ? st.mtimeMs : 0 });
       }
@@ -126,13 +200,15 @@ router.get('/api/ls-stream', async (req, res) => {
     clearTimeout(batchTimer);
     flushBatch();
 
-    lsCache.set(dir, { dir, parent, subdirs: collected });
-    send({ type: 'done' });
+    if (!aborted) {
+      lsCache.set(dir, { dir, parent, subdirs: collected });
+      send({ type: 'done' });
+    }
   } catch (err) {
-    console.error('[ls-stream]', err);
+    logError('ls-stream', err);
     send({ type: 'error', message: 'Failed to read directory' });
   }
-  res.end();
+  if (!res.writableEnded) res.end();
 });
 
 // GET /api/nfo?dir=<path> — find and return NFO file in dir, decoded from CP437
@@ -178,9 +254,11 @@ router.get('/api/nfo', async (req, res) => {
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    // Disable any sniffing fallback in browsers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(text);
   } catch (err) {
-    console.error('[nfo]', err);
+    logError('nfo', err);
     res.status(500).json({ error: 'Failed to read NFO file' });
   }
 });
@@ -227,11 +305,25 @@ router.get('/file', async (req, res) => {
     '.opus': 'audio/ogg; codecs=opus', '.wma': 'audio/x-ms-wma' };
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Type', MIME[ext] || 'audio/mpeg');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  const cleanup = (stream) => {
+    req.on('close', () => stream.destroy());
+    stream.on('error', (err) => {
+      logWarn('file', err, 'stream error');
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+  };
 
   if (range) {
     const parts = range.replace(/bytes=/, '').split('-');
     const start = parseInt(parts[0], 10);
     const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end >= fileSize || start > end) {
+      res.setHeader('Content-Range', `bytes */${fileSize}`);
+      return res.status(416).end();
+    }
     const chunkSize = end - start + 1;
 
     res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
@@ -239,10 +331,13 @@ router.get('/file', async (req, res) => {
     res.status(206);
 
     const stream = fs.createReadStream(filePath, { start, end });
+    cleanup(stream);
     stream.pipe(res);
   } else {
     res.setHeader('Content-Length', fileSize);
-    fs.createReadStream(filePath).pipe(res);
+    const stream = fs.createReadStream(filePath);
+    cleanup(stream);
+    stream.pipe(res);
   }
 });
 

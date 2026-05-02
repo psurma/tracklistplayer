@@ -271,10 +271,8 @@
             method: "PUT",
             headers: { "Authorization": `Bearer ${tok}`, "Content-Type": "application/json" },
             body: JSON.stringify({ uris: [uri], position_ms: position || 0 })
-          }).catch(() => {
-          });
-        }).catch(() => {
-        });
+          }).catch((err) => console.warn("[spotify] restore play failed:", err?.message || err));
+        }).catch((err) => console.warn("[spotify] restore token failed:", err?.message || err));
       }
     });
     spotifyPlayer.addListener("player_state_changed", (playerState) => {
@@ -313,6 +311,16 @@
     });
     spotifyPlayer.addListener("authentication_error", ({ message }) => {
       console.error("Spotify auth error:", message);
+      spotifyAccessToken = null;
+      spotifyTokenExpiry = 0;
+      getSpotifyToken().then((tok) => {
+        console.log("[spotify] reauthenticated; reinitializing player");
+        try {
+          spotifyPlayer.disconnect();
+        } catch (_) {
+        }
+        initSpotifySDK(tok);
+      }).catch((err) => console.warn("[spotify] reauth failed:", err?.message || err));
     });
     spotifyPlayer.addListener("account_error", ({ message }) => {
       console.error("Spotify account error (Premium required):", message);
@@ -482,10 +490,12 @@
           } else {
             spotifySDKPendingToken = token;
           }
-        } catch (_) {
+        } catch (err) {
+          console.warn("[spotify] init token/SDK:", err?.message || err);
         }
       }
-    } catch (_) {
+    } catch (err) {
+      console.warn("[spotify] init status:", err?.message || err);
     }
   }
   async function connectSpotify() {
@@ -4505,11 +4515,14 @@ ${"\u2500".repeat(disc.albumTitle.length)}
     </div>`).join("");
   }
   async function browseDir(dir) {
-    dirModalCwd.textContent = dir;
+    dirModalCwd.textContent = dir || "(home)";
     try {
-      const res = await fetch(`/api/ls?dir=${encodeURIComponent(dir)}`);
+      const url = dir ? `/api/ls?dir=${encodeURIComponent(dir)}` : "/api/ls";
+      const res = await fetch(url);
       if (!res.ok) throw new Error("ls failed");
-      const { parent, subdirs } = await res.json();
+      const { parent, subdirs, dir: resolvedDir } = await res.json();
+      if (resolvedDir && resolvedDir !== dir) dirModalCwd.textContent = resolvedDir;
+      dir = resolvedDir || dir;
       let html = "";
       if (parent) html += `<div class="dir-entry dir-entry-up" data-path="${escapeHtml(parent)}"><span class="dir-entry-icon">&#x2191;</span> ..</div>`;
       const sorted = (subdirs || []).map(normEntryFallback).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -4530,9 +4543,9 @@ ${"\u2500".repeat(disc.albumTitle.length)}
     dirFavList.querySelectorAll(".dir-fav-item").forEach((el) => el.classList.toggle("selected", el.dataset.path === p));
   }
   async function openDirModal(startDir) {
-    const dir = startDir || dirInput.value.trim() || (getDirFavs()[0] || "/");
+    const dir = startDir || dirInput.value.trim() || getDirFavs()[0] || "";
     dirModalPath = dir;
-    dirModalSelected.textContent = dir;
+    dirModalSelected.textContent = dir || "(home)";
     dirModal.classList.remove("hidden");
     await browseDir(dir);
   }

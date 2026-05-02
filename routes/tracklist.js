@@ -2,6 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { fetchWithTimeout } = require('../lib/http');
 
 const TL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -22,7 +23,7 @@ router.get('/api/tracklist-search', async (req, res) => {
   if (!q) return res.status(400).json({ error: 'q required' });
   const url = `https://www.mixesdb.com/w/index.php?title=Special%3ASearch&search=${encodeURIComponent(q)}&fulltext=1&limit=20`;
   try {
-    const r = await fetch(url, { headers: { 'User-Agent': TL_UA } });
+    const r = await fetchWithTimeout(url, { headers: { 'User-Agent': TL_UA } }, 15000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const html = await r.text();
 
@@ -51,7 +52,7 @@ router.get('/api/tracklist-fetch', async (req, res) => {
     return res.status(400).json({ error: 'invalid url' });
   }
   try {
-    const r = await fetch(url, { headers: { 'User-Agent': TL_UA } });
+    const r = await fetchWithTimeout(url, { headers: { 'User-Agent': TL_UA } }, 15000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const html = await r.text();
 

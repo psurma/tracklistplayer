@@ -7,6 +7,9 @@ const path = require('path');
 const { serverEscapeHtml, ensureFreshToken } = require('../lib/helpers');
 const { pendingSpotifyStates } = require('../lib/oauth');
 const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
+const { fetchWithTimeout } = require('../lib/http');
+const { refreshOAuthToken } = require('../lib/refresh');
+const { logWarn } = require('../lib/logger');
 
 const spotifyConfig = createConfigStore(path.join(TLP_DIR, 'spotify.json'));
 const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:3123/auth/spotify/callback';
@@ -17,18 +20,14 @@ async function refreshSpotifyToken(config) {
   params.set('grant_type', 'refresh_token');
   params.set('refresh_token', config.refresh_token);
   const credentials = Buffer.from(`${config.client_id}:${config.client_secret}`).toString('base64');
-  const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: { 'Authorization': `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
+  return refreshOAuthToken({
+    tokenUrl: 'https://accounts.spotify.com/api/token',
+    config,
+    store: spotifyConfig,
+    headers: { 'Authorization': `Basic ${credentials}` },
+    params,
+    context: 'spotify',
   });
-  if (!tokenRes.ok) throw new Error('Refresh failed');
-  const tokenData = await tokenRes.json();
-  console.log('Token refresh — scopes returned by Spotify:', tokenData.scope || '(none)');
-  const updated = { ...config, access_token: tokenData.access_token, expires_at: Date.now() + tokenData.expires_in * 1000 };
-  if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
-  await spotifyConfig.write(updated);
-  return updated;
 }
 
 // GET /api/spotify/config — return client_id and auth status
@@ -82,17 +81,16 @@ router.get('/auth/spotify/callback', async (req, res) => {
     params.set('code', code);
     params.set('redirect_uri', SPOTIFY_REDIRECT_URI);
     const credentials = Buffer.from(`${config.client_id}:${config.client_secret}`).toString('base64');
-    const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+    const tokenRes = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
       method: 'POST',
       headers: { 'Authorization': `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
-    });
+    }, 15000);
     if (!tokenRes.ok) {
       const err = await tokenRes.text();
       return res.send(`<!DOCTYPE html><html><head><title>Spotify Auth</title></head><body style="font-family:sans-serif;background:#191414;color:#fff;padding:40px"><h2 style="color:#e05050">Token exchange failed</h2><pre>${serverEscapeHtml(err)}</pre></body></html>`);
     }
     const tokenData = await tokenRes.json();
-    console.log('Spotify token granted scopes:', tokenData.scope);
     await spotifyConfig.write({
       ...config,
       access_token: tokenData.access_token,
@@ -111,9 +109,9 @@ router.get('/api/spotify/status', async (req, res) => {
   const config = await spotifyConfig.read();
   if (!config.access_token || !config.refresh_token) return res.json({ connected: false });
   try {
-    const meRes = await fetch('https://api.spotify.com/v1/me', {
+    const meRes = await fetchWithTimeout('https://api.spotify.com/v1/me', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
-    });
+    }, 10000);
     if (meRes.ok) {
       const me = await meRes.json();
       return res.json({ connected: true, displayName: me.display_name || me.id || 'Spotify User', granted_scope: config.granted_scope || '' });
@@ -122,16 +120,16 @@ router.get('/api/spotify/status', async (req, res) => {
     if (meRes.status === 401 && config.refresh_token) {
       try {
         const updated = await refreshSpotifyToken(config);
-        const me2Res = await fetch('https://api.spotify.com/v1/me', {
+        const me2Res = await fetchWithTimeout('https://api.spotify.com/v1/me', {
           headers: { 'Authorization': `Bearer ${updated.access_token}` },
-        });
+        }, 10000);
         if (me2Res.ok) {
           const me2 = await me2Res.json();
           return res.json({ connected: true, displayName: me2.display_name || me2.id || 'Spotify User' });
         }
-      } catch (_) {}
+      } catch (err) { logWarn('spotify', err, 'status refresh'); }
     }
-  } catch (_) {}
+  } catch (err) { logWarn('spotify', err, 'status'); }
   res.json({ connected: !!(config.access_token), displayName: '' });
 });
 
@@ -149,14 +147,14 @@ router.post('/api/spotify/refresh', async (req, res) => {
 
 // GET /api/spotify/liked?offset=&limit= — proxy liked tracks
 router.get('/api/spotify/liked', requireAuth(spotifyConfig), async (req, res) => {
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
   try {
-    const spotRes = await fetch(`https://api.spotify.com/v1/me/tracks?offset=${offset}&limit=${limit}`, {
+    const spotRes = await fetchWithTimeout(`https://api.spotify.com/v1/me/tracks?offset=${offset}&limit=${limit}`, {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
-    });
+    }, 15000);
     if (!spotRes.ok) return res.status(spotRes.status).json({ error: 'Spotify API error' });
     const data = await spotRes.json();
     res.json(data);
@@ -167,11 +165,11 @@ router.get('/api/spotify/liked', requireAuth(spotifyConfig), async (req, res) =>
 
 // GET /api/spotify/playlists — list user's playlists
 router.get('/api/spotify/playlists', requireAuth(spotifyConfig), async (req, res) => {
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
   try {
-    const r = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+    const r = await fetchWithTimeout('https://api.spotify.com/v1/me/playlists?limit=50', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
-    });
+    }, 15000);
     if (!r.ok) return res.status(r.status).json({ error: 'Spotify API error' });
     res.json(await r.json());
   } catch (err) {
@@ -183,13 +181,14 @@ router.get('/api/spotify/playlists', requireAuth(spotifyConfig), async (req, res
 router.get('/api/spotify/playlist-tracks', requireAuth(spotifyConfig), async (req, res) => {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'id required' });
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 50));
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       `https://api.spotify.com/v1/playlists/${encodeURIComponent(id)}/tracks?offset=${offset}&limit=${limit}`,
-      { headers: { 'Authorization': `Bearer ${config.access_token}` } }
+      { headers: { 'Authorization': `Bearer ${config.access_token}` } },
+      15000
     );
     if (r.status === 403) {
       return res.status(403).json({ error: 'quota_exceeded' });
@@ -206,11 +205,11 @@ router.get('/api/spotify/playlist-tracks', requireAuth(spotifyConfig), async (re
 
 // GET /api/spotify/devices — list available Spotify Connect devices
 router.get('/api/spotify/devices', requireAuth(spotifyConfig), async (req, res) => {
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
   try {
-    const devRes = await fetch('https://api.spotify.com/v1/me/player/devices', {
+    const devRes = await fetchWithTimeout('https://api.spotify.com/v1/me/player/devices', {
       headers: { 'Authorization': `Bearer ${config.access_token}` },
-    });
+    }, 10000);
     if (!devRes.ok) return res.status(devRes.status).json({ error: 'Spotify API error' });
     res.json(await devRes.json());
   } catch (err) {
@@ -229,12 +228,13 @@ router.post('/api/spotify/disconnect', async (req, res) => {
 router.get('/api/spotify/search', requireAuth(spotifyConfig), async (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'q required' });
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
   const type = req.query.type || 'track';
   try {
-    const spotRes = await fetch(
+    const spotRes = await fetchWithTimeout(
       `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=5`,
-      { headers: { 'Authorization': `Bearer ${config.access_token}` } }
+      { headers: { 'Authorization': `Bearer ${config.access_token}` } },
+      15000
     );
     if (!spotRes.ok) return res.status(spotRes.status).json({ error: 'Spotify API error' });
     res.json(await spotRes.json());
@@ -247,9 +247,9 @@ router.get('/api/spotify/search', requireAuth(spotifyConfig), async (req, res) =
 router.post('/api/spotify/add-to-playlist', requireAuth(spotifyConfig), async (req, res) => {
   const { playlistId, trackUri } = req.body || {};
   if (!playlistId || !trackUri) return res.status(400).json({ error: 'playlistId and trackUri required' });
-  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSpotifyToken, 'spotify');
   try {
-    const spotRes = await fetch(
+    const spotRes = await fetchWithTimeout(
       `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks`,
       {
         method: 'POST',
@@ -258,7 +258,8 @@ router.post('/api/spotify/add-to-playlist', requireAuth(spotifyConfig), async (r
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ uris: [trackUri] }),
-      }
+      },
+      15000
     );
     if (!spotRes.ok) {
       const errBody = await spotRes.text();

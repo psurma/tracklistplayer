@@ -98,8 +98,8 @@ function initSpotifySDK(token) {
           method: 'PUT',
           headers: { 'Authorization': `Bearer ${tok}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ uris: [uri], position_ms: position || 0 }),
-        }).catch(() => {});
-      }).catch(() => {});
+        }).catch((err) => console.warn('[spotify] restore play failed:', err?.message || err));
+      }).catch((err) => console.warn('[spotify] restore token failed:', err?.message || err));
     }
   });
   spotifyPlayer.addListener('player_state_changed', (playerState) => {
@@ -144,6 +144,15 @@ function initSpotifySDK(token) {
   });
   spotifyPlayer.addListener('authentication_error', ({ message }) => {
     console.error('Spotify auth error:', message);
+    // Mid-playback recovery: token expired or revoked. Force a refresh and
+    // reconnect the player; if that succeeds, transparently resume.
+    spotifyAccessToken = null;
+    spotifyTokenExpiry = 0;
+    getSpotifyToken().then((tok) => {
+      console.log('[spotify] reauthenticated; reinitializing player');
+      try { spotifyPlayer.disconnect(); } catch (_) {}
+      initSpotifySDK(tok);
+    }).catch((err) => console.warn('[spotify] reauth failed:', err?.message || err));
   });
   spotifyPlayer.addListener('account_error', ({ message }) => {
     console.error('Spotify account error (Premium required):', message);
@@ -334,9 +343,9 @@ async function initSpotify() {
         } else {
           spotifySDKPendingToken = token;
         }
-      } catch (_) {}
+      } catch (err) { console.warn('[spotify] init token/SDK:', err?.message || err); }
     }
-  } catch (_) {}
+  } catch (err) { console.warn('[spotify] init status:', err?.message || err); }
 }
 
 async function connectSpotify() {

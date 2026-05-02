@@ -8,6 +8,9 @@ const https = require('https');
 const { BoundedMap, serverEscapeHtml, ensureFreshToken } = require('../lib/helpers');
 const { pendingSoundcloudStates } = require('../lib/oauth');
 const { TLP_DIR, createConfigStore, requireAuth } = require('../lib/oauth-helpers');
+const { fetchWithTimeout } = require('../lib/http');
+const { refreshOAuthToken } = require('../lib/refresh');
+const { logWarn, logInfo } = require('../lib/logger');
 
 const soundcloudConfig = createConfigStore(path.join(TLP_DIR, 'soundcloud.json'));
 const SOUNDCLOUD_REDIRECT_URI = 'http://127.0.0.1:3123/auth/soundcloud/callback';
@@ -18,21 +21,13 @@ async function refreshSoundcloudToken(config) {
   params.set('client_id', config.client_id);
   params.set('client_secret', config.client_secret);
   params.set('refresh_token', config.refresh_token);
-  const tokenRes = await fetch('https://api.soundcloud.com/oauth2/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json; charset=utf-8' },
-    body: params.toString(),
+  return refreshOAuthToken({
+    tokenUrl: 'https://api.soundcloud.com/oauth2/token',
+    config,
+    store: soundcloudConfig,
+    params,
+    context: 'soundcloud',
   });
-  if (!tokenRes.ok) throw new Error('SoundCloud refresh failed');
-  const tokenData = await tokenRes.json();
-  const updated = {
-    ...config,
-    access_token: tokenData.access_token,
-    expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
-  };
-  if (tokenData.refresh_token) updated.refresh_token = tokenData.refresh_token;
-  await soundcloudConfig.write(updated);
-  return updated;
 }
 
 // SoundCloud web client_id scraper
@@ -45,7 +40,7 @@ async function getSoundcloudWebClientId() {
   }
   const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
   try {
-    const homeRes = await fetch('https://soundcloud.com', { headers: { 'User-Agent': UA } });
+    const homeRes = await fetchWithTimeout('https://soundcloud.com', { headers: { 'User-Agent': UA } }, 10000);
     if (!homeRes.ok) return null;
     const html = await homeRes.text();
     const assetUrls = [];
@@ -53,7 +48,7 @@ async function getSoundcloudWebClientId() {
     let m;
     while ((m = re.exec(html)) !== null) assetUrls.push(m[1]);
     for (const url of assetUrls.slice(-5).reverse()) {
-      const jsRes = await fetch(url, { headers: { 'User-Agent': UA } });
+      const jsRes = await fetchWithTimeout(url, { headers: { 'User-Agent': UA } }, 10000);
       if (!jsRes.ok) continue;
       const js = await jsRes.text();
       const patterns = [
@@ -67,19 +62,30 @@ async function getSoundcloudWebClientId() {
         if (hit && hit[1]) {
           scWebClientId = hit[1];
           scWebClientIdFetchedAt = Date.now();
-          console.log('[SC] web client_id scraped:', scWebClientId.slice(0, 8) + '...');
+          logInfo('SC', `web client_id scraped: ${scWebClientId.slice(0, 8)}...`);
           return scWebClientId;
         }
       }
     }
   } catch (e) {
-    console.log('[SC] web client_id scrape error:', e.message);
+    logWarn('SC', e, 'web client_id scrape');
   }
   return null;
 }
 
 // CDN URL cache keyed by track id
 const soundcloudCdnCache = new BoundedMap(200);
+
+// Strict allowlist for proxied API URLs supplied via next_href, to prevent
+// SSRF + token exfiltration if an attacker can influence the value.
+function isAllowedSoundcloudApiUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.protocol === 'https:' && url.hostname === 'api.soundcloud.com';
+  } catch (_) {
+    return false;
+  }
+}
 
 // GET /api/soundcloud/config
 router.get('/api/soundcloud/config', async (_req, res) => {
@@ -129,11 +135,11 @@ router.get('/auth/soundcloud/callback', async (req, res) => {
     params.set('client_secret', config.client_secret);
     params.set('redirect_uri', SOUNDCLOUD_REDIRECT_URI);
     params.set('code', code);
-    const tokenRes = await fetch('https://api.soundcloud.com/oauth2/token', {
+    const tokenRes = await fetchWithTimeout('https://api.soundcloud.com/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json; charset=utf-8' },
       body: params.toString(),
-    });
+    }, 15000);
     if (!tokenRes.ok) {
       const err = await tokenRes.text();
       return res.send(`<!DOCTYPE html><html><head><title>SoundCloud Auth</title></head><body style="font-family:sans-serif;background:#111;color:#fff;padding:40px"><h2 style="color:#e05050">Token exchange failed</h2><pre>${serverEscapeHtml(err)}</pre></body></html>`);
@@ -156,20 +162,21 @@ router.get('/api/soundcloud/status', async (_req, res) => {
   let config = await soundcloudConfig.read();
   if (!config.access_token) return res.json({ connected: false });
   try {
-    let meRes = await fetch('https://api.soundcloud.com/me', {
+    let meRes = await fetchWithTimeout('https://api.soundcloud.com/me', {
       headers: { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' },
-    });
+    }, 10000);
     if (meRes.status === 401 && config.refresh_token) {
-      try { config = await refreshSoundcloudToken(config); } catch (_) {}
-      meRes = await fetch('https://api.soundcloud.com/me', {
+      try { config = await refreshSoundcloudToken(config); }
+      catch (err) { logWarn('soundcloud', err, 'status refresh'); }
+      meRes = await fetchWithTimeout('https://api.soundcloud.com/me', {
         headers: { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' },
-      });
+      }, 10000);
     }
     if (meRes.ok) {
       const me = await meRes.json();
       return res.json({ connected: true, displayName: me.username || me.full_name || 'SoundCloud User' });
     }
-  } catch (_) {}
+  } catch (err) { logWarn('soundcloud', err, 'status'); }
   res.json({ connected: !!(config.access_token) });
 });
 
@@ -186,12 +193,12 @@ router.post('/api/soundcloud/refresh', async (_req, res) => {
 });
 
 // GET /api/soundcloud/playlists — user's own playlists (sets)
-router.get('/api/soundcloud/playlists', requireAuth(soundcloudConfig), async (_req, res) => {
-  let config = await ensureFreshToken(_req.serviceConfig, refreshSoundcloudToken);
+router.get('/api/soundcloud/playlists', requireAuth(soundcloudConfig), async (req, res) => {
+  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken, 'soundcloud');
   try {
-    const scRes = await fetch('https://api.soundcloud.com/me/playlists?limit=50', {
+    const scRes = await fetchWithTimeout('https://api.soundcloud.com/me/playlists?limit=50', {
       headers: { 'Authorization': `OAuth ${config.access_token}`, 'Accept': 'application/json; charset=utf-8' },
-    });
+    }, 15000);
     if (!scRes.ok) return res.status(scRes.status).json({ error: `SoundCloud API error ${scRes.status}` });
     const data = await scRes.json();
     res.json(Array.isArray(data) ? data : []);
@@ -202,21 +209,21 @@ router.get('/api/soundcloud/playlists', requireAuth(soundcloudConfig), async (_r
 
 // GET /api/soundcloud/liked?next_href=
 router.get('/api/soundcloud/liked', requireAuth(soundcloudConfig), async (req, res) => {
-  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken, 'soundcloud');
   try {
     const nextHref = req.query.next_href;
-    if (nextHref && !nextHref.startsWith('https://api.soundcloud.com/')) {
+    if (nextHref && !isAllowedSoundcloudApiUrl(nextHref)) {
       return res.status(400).json({ error: 'Invalid next_href' });
     }
     const url = nextHref
       ? nextHref
       : 'https://api.soundcloud.com/me/favorites?limit=50&linked_partitioning=1';
-    const scRes = await fetch(url, {
+    const scRes = await fetchWithTimeout(url, {
       headers: {
         'Authorization': `OAuth ${config.access_token}`,
         'Accept': 'application/json; charset=utf-8',
       },
-    });
+    }, 15000);
     if (!scRes.ok) return res.status(scRes.status).json({ error: `SoundCloud API error ${scRes.status}` });
     const data = await scRes.json();
     res.json({ collection: data.collection || [], next_href: data.next_href || null });
@@ -227,7 +234,7 @@ router.get('/api/soundcloud/liked', requireAuth(soundcloudConfig), async (req, r
 
 // GET /api/soundcloud/stream/:id
 router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (req, res) => {
-  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken);
+  let config = await ensureFreshToken(req.serviceConfig, refreshSoundcloudToken, 'soundcloud');
 
   const id = req.params.id;
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'Invalid track ID' });
@@ -249,9 +256,10 @@ router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (r
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       };
       try {
-        const v2Res = await fetch(
+        const v2Res = await fetchWithTimeout(
           `https://api-v2.soundcloud.com/tracks/${encodeURIComponent(id)}?client_id=${encodeURIComponent(webCid)}`,
-          { headers: browserHeaders }
+          { headers: browserHeaders },
+          15000
         );
         if (v2Res.ok) {
           const td = await v2Res.json();
@@ -259,7 +267,7 @@ router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (r
           const prog = transcodings.find((t) => t.format && t.format.protocol === 'progressive');
           if (prog && prog.url) {
             const resolveUrl = `${prog.url}${prog.url.includes('?') ? '&' : '?'}client_id=${encodeURIComponent(webCid)}`;
-            const sr = await fetch(resolveUrl, { headers: browserHeaders });
+            const sr = await fetchWithTimeout(resolveUrl, { headers: browserHeaders }, 15000);
             if (sr.ok) {
               const sd = await sr.json();
               cdnUrl = sd.url || null;
@@ -267,7 +275,7 @@ router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (r
           }
         }
       } catch (e) {
-        console.log('[SC stream] v2 error:', e.message);
+        logWarn('SC stream', e, 'v2');
       }
     }
 
@@ -275,9 +283,10 @@ router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (r
       soundcloudCdnCache.set(id, { url: cdnUrl, expiresAt: Date.now() + 4 * 60 * 1000 });
     } else {
       try {
-        const r = await fetch(
+        const r = await fetchWithTimeout(
           `https://api.soundcloud.com/tracks/${encodeURIComponent(id)}/stream`,
-          { redirect: 'follow', headers: { 'Authorization': `OAuth ${config.access_token}` } }
+          { redirect: 'follow', headers: { 'Authorization': `OAuth ${config.access_token}` } },
+          15000
         );
         if (!r.ok) return res.status(r.status).json({ error: 'SoundCloud stream error' });
         cdnUrl = r.url;
@@ -290,19 +299,37 @@ router.get('/api/soundcloud/stream/:id', requireAuth(soundcloudConfig), async (r
   // Proxy with Range support using https module
   try {
     const urlObj = new URL(cdnUrl);
+    // Defensive: only proxy through SoundCloud's CDN hosts
+    if (!/(^|\.)sndcdn\.com$/.test(urlObj.hostname) && urlObj.hostname !== 'api.soundcloud.com') {
+      return res.status(502).json({ error: 'unexpected upstream host' });
+    }
     const upstreamHeaders = {};
     if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
-    https.get({ hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: upstreamHeaders }, (upstream) => {
-      const outHeaders = { 'Accept-Ranges': 'bytes' };
-      if (upstream.headers['content-type']) outHeaders['Content-Type'] = upstream.headers['content-type'];
-      if (upstream.headers['content-length']) outHeaders['Content-Length'] = upstream.headers['content-length'];
-      if (upstream.headers['content-range']) outHeaders['Content-Range'] = upstream.headers['content-range'];
-      res.writeHead(upstream.statusCode, outHeaders);
-      upstream.pipe(res);
-      req.on('close', () => upstream.destroy());
-    }).on('error', (err) => {
-      console.log('[SC stream] https error:', err.message);
+    const upstreamReq = https.get(
+      { hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, headers: upstreamHeaders, timeout: 15000 },
+      (upstream) => {
+        const outHeaders = { 'Accept-Ranges': 'bytes' };
+        if (upstream.headers['content-type']) outHeaders['Content-Type'] = upstream.headers['content-type'];
+        if (upstream.headers['content-length']) outHeaders['Content-Length'] = upstream.headers['content-length'];
+        if (upstream.headers['content-range']) outHeaders['Content-Range'] = upstream.headers['content-range'];
+        res.writeHead(upstream.statusCode || 502, outHeaders);
+        // Mid-stream inactivity watchdog: if the CDN stops sending data for
+        // 30s, kill the proxy. Otherwise a stalled connection would pin the
+        // response indefinitely.
+        upstream.setTimeout(30000, () => upstream.destroy(new Error('upstream stalled')));
+        upstream.pipe(res);
+        upstream.on('error', (err) => {
+          logWarn('SC stream', err, 'upstream');
+          res.end();
+        });
+        req.on('close', () => upstream.destroy());
+      }
+    );
+    upstreamReq.on('timeout', () => upstreamReq.destroy(new Error('upstream connect timeout')));
+    upstreamReq.on('error', (err) => {
+      logWarn('SC stream', err, 'https');
       if (!res.headersSent) res.status(500).json({ error: err.message });
+      else res.end();
     });
   } catch (err) {
     if (!res.headersSent) res.status(500).json({ error: err.message });

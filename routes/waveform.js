@@ -3,10 +3,10 @@
 const express = require('express');
 const router = express.Router();
 const fs = require('fs');
-const { spawn } = require('child_process');
 const { BoundedMap, resolveAndValidate } = require('../lib/helpers');
 const { readLibrary } = require('./library');
-const { SPAWN_ENV } = require('../lib/env');
+const { runWithTimeout } = require('../lib/spawnUtil');
+const { logError } = require('../lib/logger');
 
 // Waveform cache (in-memory, keyed by absolute mp3 path)
 const waveformCache = new BoundedMap(200);
@@ -19,18 +19,16 @@ async function getOrComputeWaveform(filePath, bucketMs) {
   const SAMPLE_RATE = 2000;
   const SAMPLES_PER_BUCKET = Math.round(SAMPLE_RATE * bucketMs / 1000);
 
-  const ff = spawn('ffmpeg', [
+  // 5-min wall-clock cap on ffmpeg so a stalled file (network drive, locked
+  // file) cannot pin a worker indefinitely.
+  const ff = await runWithTimeout('ffmpeg', [
     '-i', filePath,
     '-ac', '1', '-ar', String(SAMPLE_RATE),
     '-f', 'f32le', 'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'ignore'], env: SPAWN_ENV });
+  ], { timeoutMs: 5 * 60 * 1000 });
+  if (ff.code !== 0) throw new Error(ff.killed ? 'ffmpeg decode timeout' : 'ffmpeg decode failed');
 
-  const bufs = [];
-  ff.stdout.on('data', (c) => bufs.push(c));
-  const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
-  if (code !== 0) throw new Error('ffmpeg decode failed');
-
-  const raw = Buffer.concat(bufs);
+  const raw = ff.stdout;
   const numSamples = Math.floor(raw.length / 4);
   const floats = new Float32Array(raw.buffer, raw.byteOffset, numSamples);
   const duration = numSamples / SAMPLE_RATE;
@@ -115,7 +113,7 @@ router.get('/api/waveform', async (req, res) => {
   try {
     res.json(await getOrComputeWaveform(filePath, bucketMs));
   } catch (err) {
-    console.error('[waveform]', err);
+    logError('waveform', err);
     res.status(500).json({ error: 'Waveform analysis failed' });
   }
 });
@@ -189,7 +187,7 @@ router.get('/api/detect-transitions', async (req, res) => {
 
     res.json({ duration: Math.round(wf.duration), transitions });
   } catch (err) {
-    console.error('[detect]', err);
+    logError('detect', err);
     res.status(500).json({ error: 'Transition detection failed' });
   }
 });

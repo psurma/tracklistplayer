@@ -4,11 +4,12 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
 const { BoundedMap, resolveAndValidate } = require('../lib/helpers');
 const { readLibrary } = require('./library');
 const { scanDirAsync } = require('../lib/cueParser');
-const { SPAWN_ENV } = require('../lib/env');
+const { runWithTimeout } = require('../lib/spawnUtil');
+const { fetchWithTimeout } = require('../lib/http');
+const { logError, logWarn } = require('../lib/logger');
 
 // Music index cache (keyed by root dir)
 const indexCache = new BoundedMap(50);
@@ -60,7 +61,7 @@ async function buildMusicIndexStreaming(rootDir, onEntry) {
               queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
             }
           }
-        } catch (err) { console.warn('[index] readdir failed:', dir, err.message); }
+        } catch (err) { logWarn('index', err, `readdir ${dir}`); }
       }
     }));
   }
@@ -88,7 +89,7 @@ router.get('/api/index', async (req, res) => {
     indexCache.set(root, index);
     res.json(index);
   } catch (err) {
-    console.error('[index]', err);
+    logError('index', err);
     res.status(500).json({ error: 'Failed to build index' });
   }
 });
@@ -127,7 +128,7 @@ router.get('/api/index-stream', async (req, res) => {
     });
     indexCache.set(root, results);
   } catch (err) {
-    console.error('[index-stream]', err);
+    logError('index-stream', err);
     if (!res.writableEnded) res.write('data: {"done":true,"error":"Indexing failed"}\n\n');
     res.end();
     return;
@@ -178,19 +179,20 @@ router.get('/api/artwork', async (req, res) => {
     }
   } catch (_) {}
 
-  // 3. Extract embedded art via ffmpeg
-  const ff = spawn('ffmpeg', [
+  // 3. Extract embedded art via ffmpeg (60s cap)
+  const ff = await runWithTimeout('ffmpeg', [
     '-i', filePath, '-an', '-vcodec', 'copy', '-f', 'image2', 'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'ignore'], env: SPAWN_ENV });
-  const bufs = [];
-  ff.stdout.on('data', (c) => bufs.push(c));
-  const code = await new Promise((r) => { ff.on('close', r); ff.on('error', () => r(-1)); });
-  if (code === 0 && bufs.length) {
-    const data = Buffer.concat(bufs);
-    artworkCache.set(filePath, { data, type: 'image/jpeg' });
-    res.setHeader('Content-Type', 'image/jpeg');
+  ], { timeoutMs: 60000 });
+  if (ff.code === 0 && ff.stdout.length) {
+    // Sniff PNG vs JPEG so the Content-Type matches the bytes we send.
+    const isPng = ff.stdout.length >= 8
+      && ff.stdout[0] === 0x89 && ff.stdout[1] === 0x50
+      && ff.stdout[2] === 0x4E && ff.stdout[3] === 0x47;
+    const type = isPng ? 'image/png' : 'image/jpeg';
+    artworkCache.set(filePath, { data: ff.stdout, type });
+    res.setHeader('Content-Type', type);
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    return res.send(data);
+    return res.send(ff.stdout);
   }
 
   // 4. MusicBrainz Cover Art Archive fallback
@@ -198,16 +200,16 @@ router.get('/api/artwork', async (req, res) => {
     const folderName = path.basename(dir);
     const cleaned = folderName.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
     const mbSearch = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(cleaned)}&limit=1&fmt=json`;
-    const mbRes = await fetch(mbSearch, { headers: { 'User-Agent': 'TracklistPlayer/1.0 (local)' } });
+    const mbRes = await fetchWithTimeout(mbSearch, { headers: { 'User-Agent': 'TracklistPlayer/1.0 (local)' } }, 10000);
     if (mbRes.ok) {
       const mbData = await mbRes.json();
       const releases = mbData.releases || [];
       if (releases.length > 0) {
         const mbid = releases[0].id;
-        const caRes = await fetch(`https://coverartarchive.org/release/${mbid}/front-250`, {
+        const caRes = await fetchWithTimeout(`https://coverartarchive.org/release/${mbid}/front-250`, {
           redirect: 'follow',
           headers: { 'User-Agent': 'TracklistPlayer/1.0 (local)' },
-        });
+        }, 10000);
         if (caRes.ok) {
           const buf = Buffer.from(await caRes.arrayBuffer());
           artworkCache.set(filePath, { data: buf, type: 'image/jpeg' });
@@ -217,7 +219,7 @@ router.get('/api/artwork', async (req, res) => {
         }
       }
     }
-  } catch (_) {}
+  } catch (err) { logWarn('artwork', err, 'cover-art-archive'); }
 
   artworkCache.set(filePath, null);
   res.status(404).end();
